@@ -190,11 +190,15 @@ void box(sf::RenderWindow& window, sf::Vector2f pos, sf::Vector2f size,
 }
 
 void centeredLabel(sf::RenderWindow& window, const sf::Font& font, const std::string& value,
-                   sf::Vector2f center, unsigned size, sf::Color color, bool bold = false, float tracking = 1.f) {
+                   sf::Vector2f center, unsigned size, sf::Color color, bool bold = false, float tracking = 1.f, float maxWidth = 0.f) {
     sf::Text label(font, fromUtf8(value), size);
     label.setLetterSpacing(tracking);
     if (bold) label.setStyle(sf::Text::Bold);
     const auto bounds = label.getLocalBounds();
+    if (maxWidth > 0 && bounds.size.x > maxWidth) {
+        const float scale = maxWidth / bounds.size.x;
+        label.setScale({scale,scale});
+    }
     label.setOrigin(bounds.position + bounds.size / 2.f);
     label.setPosition(center);
     label.setFillColor(color);
@@ -671,13 +675,12 @@ auto loadHeroSprites(std::index_sequence<Slots...>) {
 class App {
     sf::RenderWindow window{sf::VideoMode({WINDOW_W, WINDOW_H}), fromUtf8(GAME_TITLE)};
     sf::Font font;
-    sf::Font calligraphy;
     sf::Font titleCalligraphy, blackletter;
     sf::Texture gothicHall, valley;
     std::optional<sf::Texture> fogTexture;
     SpriteAsset flowers{"garden/flowers.png", 8, 4};
     SpriteAsset dormantFlowers{"garden/flowers-dormant.png", 8, 4};
-    bool hasCalligraphy = false, hasGothicHall = false;
+    bool hasGothicHall = false;
     bool hasTitleCalligraphy = false, hasBlackletter = false;
     std::array<SpriteAsset, HEROES.size()> heroes = loadHeroSprites(std::make_index_sequence<HEROES.size()>{});
     std::array<SpriteAsset, 4> guardians{SpriteAsset("guards/moss.png", 4), SpriteAsset("guards/ember.png", 4),
@@ -722,9 +725,8 @@ public:
     App() {
         window.setFramerateLimit(60);
         window.setKeyRepeatEnabled(false);
-        const auto path = assetPath("ruins-zh.ttf");
-        if (!font.openFromFile(path)) throw std::runtime_error("Missing assets/ruins-zh.ttf. Keep assets beside the executable.");
-        hasCalligraphy = calligraphy.openFromFile(assetPath("LXGWWenKaiLite-Medium.ttf"));
+        if (!font.openFromFile(assetPath("LXGWWenKaiLite-Medium.ttf")))
+            throw std::runtime_error("Missing LXGWWenKaiLite-Medium.ttf");
         hasTitleCalligraphy = titleCalligraphy.openFromFile(assetPath("LongCang-Regular.ttf"));
         hasBlackletter = blackletter.openFromFile(assetPath("UnifrakturMaguntia-Book.ttf"));
         hasGothicHall = gothicHall.loadFromFile(assetPath("gothic-hall.jpg"));
@@ -770,7 +772,7 @@ public:
     }
 
 private:
-    const sf::Font& displayFont() const { return hasCalligraphy ? calligraphy : font; }
+    const sf::Font& displayFont() const { return font; }
     const sf::Font& titleFont() const { return hasTitleCalligraphy ? titleCalligraphy : displayFont(); }
 
     void loadProgress() {
@@ -1465,7 +1467,7 @@ private:
         if (mapMode) {
             cutPanel(window,bounds,5,hover ? sf::Color(255,243,214) : sf::Color(246,232,202,237),
                      {125,98,71});
-            centeredLabel(window,titleFont(),title,bounds.getCenter(),21,{65,48,37});
+            centeredLabel(window,font,title,bounds.getCenter(),21,{65,48,37},false,1.f,bounds.size.x-16);
             return;
         }
         const sf::Color gold(247, 205, 116), light(230, 237, 240);
@@ -1473,15 +1475,15 @@ private:
             primary ? (hover ? gold : sf::Color(224, 171, 77))
                     : (hover ? sf::Color(65, 83, 96) : sf::Color(37, 49, 61)),
             primary ? gold : sf::Color(97, 114, 123));
-        centeredLabel(window, mapMode ? titleFont() : font, title, bounds.getCenter(), primary ? 26 : 19,
-                      primary ? sf::Color(33, 22, 16) : light);
+        centeredLabel(window, font, title, bounds.getCenter(), primary ? 26 : 19,
+                      primary ? sf::Color(33, 22, 16) : light,false,1.f,bounds.size.x-16);
     }
 
     void drawAntiqueButton(const sf::FloatRect& bounds, const std::string& title) {
         const bool hover = bounds.contains(window.mapPixelToCoords(sf::Mouse::getPosition(window)));
         const auto metal = hover ? sf::Color(225, 192, 135) : sf::Color(134, 115, 89);
         cutPanel(window, bounds, 7, hover ? sf::Color(66, 53, 48) : sf::Color(25, 28, 37), metal);
-        centeredLabel(window, displayFont(), title, bounds.getCenter(), 19, {236, 219, 188});
+        centeredLabel(window, displayFont(), title, bounds.getCenter(), 19, {236, 219, 188},false,1.f,bounds.size.x-16);
     }
 
     void drawMap() {
@@ -1581,6 +1583,9 @@ private:
         {"花都往事", "那一年，神殿又把晚霜引去了西圃。妮娜没能活到天\n亮。Flora 顺着霜痕找到当年的旧令，也看见\n了城下的裂缝。灾夜，弥娅站在岔口挥扇，奥伦和维\n蕾送伤员过桥。Flora 用尽神力，让脚下的路\n多撑了一程。半座城塌进地下，人们带着还能用的东\n西去了西山。看园人带走了几根梨枝。"},
         {"花都往事", "第三个秋天，山上的梨熟了。八朵花重新开放，Fl\nora 收回妮娜留下的折纸。那孩子费劲记下三个\n日子，是想让她坐下来，好好吃一个梨。她从旧梨园\n起身，去了西山。"}
     }};
+    std::array<SpriteAsset,4> bossArt{SpriteAsset("bosses/miya.png"), SpriteAsset("bosses/oren.png"),
+        SpriteAsset("bosses/virelle.png"), SpriteAsset("bosses/winter.png")};
+    const std::array<const char*,4> bossNames{"绢花匠 · 弥娅","留影师 · 奥伦","绛衣骑士 · 维蕾","心兽 · 缄冬"};
     SpriteAsset storyArt{"folio/chronicle.jpg",12,4};
     SpriteAsset autumnMemory{"folio/orchard-0.jpg"};
     int archive = -1;
@@ -1616,6 +1621,12 @@ private:
 
     void drawBriefing() {
         modal(activeLevel ? std::to_string(*activeLevel + 1) + "  " + LEVELS[*activeLevel].name : u8"自定义探险");
+        if (activeLevel && *activeLevel >= 4) {
+            const auto slot = *activeLevel - 4;
+            box(window,{60,265},{280,330},{24,31,39,242},{142,121,86});
+            bossArt[slot].draw(window,{76,280},248);
+            centeredLabel(window,font,bossNames[slot],{200,554},24,{248,222,174});
+        }
         if (activeLevel) {
             const auto i=*activeLevel;
             const std::string reward=i<relic::weapons.size() ?
@@ -2141,14 +2152,9 @@ private:
                     drawGuard(window, pos);
             } else if (enemy.kind == Kind::Boss) {
                 const auto feet = pos + sf::Vector2f(TILE / 2, 17);
-                const float breathing = 1.f + .07f * std::sin(seconds * 3.f);
-                softLight(window, feet, {22, 10}, {174, 64, 123, 135});
-                polygon(window, {feet + sf::Vector2f(-18, 1), feet + sf::Vector2f(-9, -21),
-                                 feet + sf::Vector2f(9, -21), feet + sf::Vector2f(18, 1),
-                                 feet + sf::Vector2f(0, -3)}, {44, 24, 51});
-                disc(window, feet + sf::Vector2f(0, -23), 8.f * breathing, {37, 21, 45});
-                disc(window, feet + sf::Vector2f(-3, -23), 1.2f, {252, 131, 154});
-                disc(window, feet + sf::Vector2f(3, -23), 1.2f, {252, 131, 154});
+                const float height = 40.f + .6f * std::sin(seconds * 3.f);
+                softLight(window, feet, {18,7}, {105,55,98,110});
+                bossArt[game.expeditionLevel-4].draw(window,feet-sf::Vector2f(height/2,height),height);
             } else if (enemy.kind == Kind::Mummy) {
                 const auto p = pos + sf::Vector2f(0, .7f * std::sin(seconds * 5.f + enemy.home));
                 box(window, p + sf::Vector2f(4, 5), {11, 12}, {47, 39, 47});
@@ -2188,7 +2194,7 @@ private:
                 const int maximum = enemy.kind == Kind::Boss ? relic::GameSession::bossHealth(game.expeditionLevel) :
                     enemy.kind == Kind::Puppet ? 100 : enemy.kind == Kind::Ghost ? 60 : 40;
                 const float width = enemy.kind == Kind::Boss ? 37.f : 21.f;
-                const float offset = enemy.kind == Kind::Boss ? 26.f : enemy.kind == Kind::Puppet ? 13.f : 6.f;
+                const float offset = enemy.kind == Kind::Boss ? 35.f : enemy.kind == Kind::Puppet ? 13.f : 6.f;
                 const auto corner = pos + sf::Vector2f((TILE - width) / 2.f, -offset);
                 box(window, corner, {width, 3}, {48, 34, 55});
                 box(window, corner, {width * enemy.health / maximum, 3}, {238, 107, 155});
