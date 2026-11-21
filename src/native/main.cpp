@@ -827,6 +827,7 @@ private:
         resultsMode = true;
         if (session->game.status == "won" && activeLevel) {
             if (*activeLevel < relic::weapons.size() && !cleared[*activeLevel]) newWeapon = *activeLevel;
+            endingPending = !cleared[*activeLevel] && std::count(cleared.begin(),cleared.end(),true)==7;
             recordClear(*activeLevel);
             readingStory = true;
         }
@@ -835,9 +836,9 @@ private:
     bool readingStory = false;
 
     void finishResult() {
-        const bool orchard = activeLevel==0 && session->game.status=="won";
+
         showMap();
-        if (orchard) openPage(7);
+        if (endingPending) { archive=8; endingPending=false; }
     }
 
     void showMap() {
@@ -1143,6 +1144,12 @@ private:
 
     void onKey(sf::Keyboard::Key key) {
         using Key = sf::Keyboard::Key;
+        if (archive>=0) {
+            if (key==Key::Escape) archive=-1;
+            else if (key==Key::Right || key==Key::Enter) browse(1);
+            else if (key==Key::Left) browse(-1);
+            return;
+        }
         if (readingStory) {
             if (key == Key::Enter || key == Key::Space) readingStory = false;
             else if (key == Key::Escape) {
@@ -1253,6 +1260,12 @@ private:
     }
 
     void onMouse(sf::Vector2f point) {
+        if (archive>=0) {
+            if (BACK_BUTTON.contains(point)) archive=-1;
+            else if (previousPage.contains(point)) browse(-1);
+            else if (nextPage.contains(point)) browse(1);
+            return;
+        }
         if (readingStory) {
             if (BRIEF_GO.contains(point)) readingStory = false;
             else if (briefing && MODAL_BACK.contains(point)) cancelBriefing();
@@ -1306,7 +1319,7 @@ private:
             for (std::size_t i=0;i<weaponIcons.size();++i)
                 if (boardSlot(i).contains(point)) { openPage(i); return click(); }
             if (bookButton.contains(point)) { armory=true; return click(); }
-            if (cleared[0] && storyButton.contains(point)) { openPage(7); return; }
+            if (storyButton.contains(point)) { browse(1); return; }
             if (MAP_HERO.contains(point)) { heroMode = true; return; }
             if (BACK_BUTTON.contains(point)) { mapMode = false; return; }
             for (std::size_t i = 0; i < LEVELS.size(); ++i) {
@@ -1404,7 +1417,7 @@ private:
         drawAntiqueButton(BACK_BUTTON,"返回 [Esc]");
     }
     void draw() {
-        if (readingStory) { drawStory(); window.display(); return; }
+        if (readingStory || archive>=0) { drawStory(); window.display(); return; }
         if (folioPage>=0) { drawFolio(); window.display(); return; }
         if (mapMode) {
             drawMap();
@@ -1518,7 +1531,7 @@ private:
         }
         drawButton(BACK_BUTTON, u8"返回 [Esc]");
         drawButton(bookButton,"武器看板");
-        if (cleared[0]) drawButton(storyButton,"西圃秋记");
+        if (std::count(cleared.begin(),cleared.end(),true)) drawButton(storyButton,"花名册 · 重读");
         drawButton(MAP_HERO,u8"换角色 [C]");
         const auto completed = std::count(cleared.begin(), cleared.end(), true);
         for (std::size_t i=0;i<weaponIcons.size();++i) {
@@ -1546,47 +1559,59 @@ private:
     }
 
     const std::array<const char*,8> beforeStory{
-        "西圃梨园的矮凳旁，压着一张折过的纸。是谁留下的？","苔庭的旧令上，为什么挤着几十个不同的年份？",
-        "雨水漫进石阶，有人曾抱着孩子沿这条路去敲医师的门。","石窟里立着一块灾碑。把拓片和花名册放在一起看看。",
+        "西圃梨园的矮凳旁，压着一张折过的纸。是谁留下的\n？","苔庭的旧令上，为什么挤着几十个不同的年份？",
+        "雨水漫进石阶，有人曾抱着孩子沿这条路去敲医师的\n门。","石窟里立着一块灾碑。把拓片和花名册放在一起看看\n。",
         "岔口开着两朵红花。弥娅举起扇子，却指向另一边。","一张模糊的底片上，四个人挤在同一辆板车里。",
-        "侧门的绞盘停在半空，齿间闪着一点碎银。","霜冠之门后，秋梨一遍遍落下。树旁的矮凳为谁留着？"};
-    const std::array<const char*,8> afterStory{
-        "妮娜记下了三棵树的花期。明年，花神就能坐下来吃完一个梨。","当年只许引霜一夜。西圃早有了人家，神殿却仍年年批下“照旧”。",
-        "医师记下了西圃的地址。那一夜，妮娜没能等到天亮。","碑上写着“在籍者全”。册上的名字淡了，夹页上的花期还在。",
-        "两朵绢花标出了薄冰。弥娅留在风口，把人引向照相馆。","奥伦给四名伤员裹紧遮光布。快门响时，最小的那个抬起了手。",
-        "维蕾用剑尖卡住绞盘。直到第四个伤员过桥，她才放下手。","心兽伏下，霜退了。矮凳旁的梨终于停在草地上。"};
-
+        "侧门的绞盘停在半空，齿间闪着一点碎银。","霜冠之门后，秋梨一遍遍落下。树旁的矮凳为谁留着\n？"};
+    struct Leaf { const char* title; const char* body; };
+    const std::array<Leaf,15> leaves{{
+        {"西圃秋记", "“东边那棵十二号开的，井边那棵十四号，最小的十\n九号。你每次来都要数，今年我替你看过了。”纸在\nFlora 的册子里夹了半个年头。\n\n秋天她又来吃梨。妮娜把一只梨转向父亲：“你看，\n这面像你。鼻子旁边也有三颗。”这回 Flora\n坐着吃完了。"},
+        {"照旧", "“已去看过，西圃无人。今夜可引霜。”那年秋天，\n账房拨钱修了空棚，给看园人住。\n\n第四十七年，梨花又赶上晚霜。神殿取出旧令，在今\n年的日期旁批了两个字。“照旧。”"},
+        {"天亮以前", "“西圃。夜诊。母亲抱来时，孩子裹着两件大人的外\n套。”医师在名字旁边写下了时辰。\n\n父亲把凳子搬到 Flora\n身旁：“我们半夜就去敲门了。她没熬到天亮。”"},
+        {"在籍者全", "“是夕开门，在籍者全。”书记官照着撤离后那一日\n的花名册，从头点到末页。\n\nFlora 曾亲笔补过“妮娜”。第二天，夹页上\n三个日期还在，那两个字又淡了。"},
+        {"红扇指路", "雪里分不清水面和石路。弥娅把两朵绢花系在最薄的\n冰旁，自己站到风口。\n\n“花好看吧？回来再摘。现在往照相馆走。”"},
+        {"留影", "奥伦撕下遮光布，把四名伤员裹严，挨个扶上板车。\n有人求他留张相，等上了山好找家人。\n\n“好了，看这里。”快门响时，最小的那个偏偏抬起\n手。"},
+        {"门楔", "剑尖楔进齿轮时，侧门停在半空。四个伤员都低下头\n，板车从门底擦了过去。\n\n维蕾在桥头数到第四个人，才冲岸上的花灯举起手。\n她脚下的石板还在抖。花根一直托到车轮上了岸。"},
+        {"霜冠之门", "心兽伏下，冰霜消退。它身后竟是一座秋日梨园。\n\n空凳边，一只梨落下来，滚了半圈，又回到了枝头。"},
+        {"灾夜至今", "八朵花从桥下亮起。最后一个车轮上岸，远处的西门\n沉了下去。\n\n三年过去，旧城留在山下。西山上，升起了人家的炊\n烟。"},
+        {"树下", "八花复苏，Flora 在旧梨园里恢复了人形。幻\n景散去，她仍坐在矮凳边。\n\n你递过折纸。她用拇指抚平了“十九号”，把纸收好\n，站了起来。"},
+        {"篱笆外", "三年后的秋天。父亲抬头，看见篱笆外那朵五瓣蓝花\n。\n\n“那年我总问收了多少梨。你家里冷不冷，我一次也\n没问过。”父亲放下手上的活。"},
+        {"吃梨", "父亲把矮凳从桌下勾出来：“坐吧。今年这棵结得有\n点酸。”\n\nFlora 坐下，把梨转了半圈。三颗斑还在梨皮\n上。父亲摸了摸鼻子。"},
+        {"花都往事", "Flora 第一次给妮娜送花，是照着册上“西圃\n梨园”四个字找去的。后来不用翻册，她也记得那道\n篱笆。梨花开时，孩子替她记日子。秋天梨熟，两个\n人就坐下来，听父亲说今年哪一棵甜。"},
+        {"花都往事", "那一年，神殿又把晚霜引去了西圃。妮娜没能活到天\n亮。Flora 顺着霜痕找到当年的旧令，也看见\n了城下的裂缝。灾夜，弥娅站在岔口挥扇，奥伦和维\n蕾送伤员过桥。Flora 用尽神力，让脚下的路\n多撑了一程。半座城塌进地下，人们带着还能用的东\n西去了西山。看园人带走了几根梨枝。"},
+        {"花都往事", "第三个秋天，山上的梨熟了。八朵花重新开放，Fl\nora 收回妮娜留下的折纸。那孩子费劲记下三个\n日子，是想让她坐下来，好好吃一个梨。她从旧梨园\n起身，去了西山。"}
+    }};
+    SpriteAsset storyArt{"folio/chronicle.jpg",12,4};
+    SpriteAsset autumnMemory{"folio/orchard-0.jpg"};
+    int archive = -1;
+    bool endingPending = false;
+    bool availableLeaf(int page) const {
+        return page < 8 ? cleared[page] : std::all_of(cleared.begin(),cleared.end(),[](bool v){return v;});
+    }
+    void browse(int step) {
+        for (int n=archive+step;n>=0 && n<static_cast<int>(leaves.size());n+=step)
+            if (availableLeaf(n)) { archive=n; return; }
+        if (step>0) archive=-1;
+    }
     void drawStory() {
-        const auto i = *activeLevel;
-        constexpr std::array<const char*,8> chapters{
-            "西圃秋记","照旧","天亮以前","在籍者全","红扇指路","留影","门楔","今年的梨"};
-        constexpr std::array<const char*,8> opening{
-            "风吹开了名册，纸角露出三个歪歪扭扭的日期。",
-            "门边的木牌早已换成住户的姓氏，公文上却还写着“空苗圃”。",
-            "医师家的门环上缠着布。深夜有人敲门，也不至于惊醒整条街。",
-            "碑刻的最后一行最清楚：“是夕开门，在籍者全。”",
-            "雪把石路和水面盖成了同一种颜色。有人循着红色走去。",
-            "照相馆的暗房空了。门槛上留下两道并排的车辙。",
-            "桥头的花灯还亮着。一辆板车正等着穿过侧门。",
-            "枝上的梨已经熟了。你听见果子落地，却总也等不到滚动的声音。"};
-        constexpr std::array<const char*,8> closing{
-            "“东边十二号，井边十四号，最小的十九号。”这年秋天，Flora 坐着吃完了梨。",
-            "Flora 当年写的是“今夜可引霜”。第四十七年的日期旁，只有两个新字：“照旧”。",
-            "父亲照常把凳子搬到 Flora 身边。这一次，谁也没有伸手去拿梨。",
-            "Flora 又写了一遍妮娜的名字。第二天名字淡了，那张普通的纸却好好地留着。",
-            "“花好看吧？回来再摘。”扇尖指着照相馆，最后一个行人也看清了方向。",
-            "快门把那只小手留在底片上。等到了西山，家人就能凭这张照片认出他们。",
-            "最后一个车轮上岸，维蕾才举手示意。她脚下的石板还在抖。",
-            "凳边留着一处空位。梨园安静下来，这个秋天终于可以往前走了。"};
-        window.clear({24,31,36});
-        drawSeasonLandscape({0,0},{1440,900});
-        box(window,{110,180},{1220,480},{23,30,34,235},{154,133,99});
-        centeredLabel(window,displayFont(),std::string(LEVELS[i].name)+(briefing?" · 入境":" · 通关"),{720,258},23,{211,197,165});
-        centeredLabel(window,titleFont(),chapters[i],{720,346},53,{248,221,166});
-        centeredLabel(window,displayFont(),briefing?opening[i]:afterStory[i],{720,460},24,{241,233,214});
-        centeredLabel(window,displayFont(),briefing?beforeStory[i]:closing[i],{720,527},23,{229,221,204});
-        if (briefing) drawButton(MODAL_BACK,"返回选关 [Esc]");
-        drawButton(BRIEF_GO,briefing?"关卡准备 [Enter]":"查看结算 [Enter]",true);
+        const int i=archive>=0 ? archive : static_cast<int>(*activeLevel);
+        const bool opening=archive<0 && briefing;
+        window.clear({33,40,39});
+        box(window,{85,100},{1270,565},{240,228,198},{158,127,88});
+        if (i==0 && !opening) autumnMemory.draw(window,{105,114},540);
+        else storyArt.draw(window,{105,114},540,false,std::min(i,11));
+        const std::string heading=i<8 ? std::string(LEVELS[i].name)+(opening?" · 入境":" · 回忆") : "终章 · 今年的梨";
+        text(window,displayFont(),heading,693,155,23,{110,83,58});
+        text(window,titleFont(),leaves[i].title,690,200,52,{69,47,38});
+        text(window,displayFont(),opening?beforeStory[i]:leaves[i].body,692,316,22,{55,47,42});
+        if (archive>=0) {
+            drawAntiqueButton(BACK_BUTTON,"返回花径 [Esc]");
+            drawAntiqueButton(previousPage,"上一页");
+            drawAntiqueButton(nextPage,"继续 [Enter]");
+        } else {
+            if (opening) drawButton(MODAL_BACK,"返回选关 [Esc]");
+            drawButton(BRIEF_GO,opening?"关卡准备 [Enter]":"查看结算 [Enter]",true);
+        }
     }
 
     void drawBriefing() {
@@ -1832,7 +1857,7 @@ private:
                           {720, 575}, 25, gold);
         if (!progressSaved)
             centeredLabel(window, font, u8"通关进度未能保存", {720, 682}, 18, gold);
-        drawButton(CONTINUE_BUTTON, activeLevel==0 && won ? u8"阅读西圃秋记 [Enter]" : u8"返回选关 [Enter]", true);
+        drawButton(CONTINUE_BUTTON, endingPending ? u8"阅读终章 [Enter]" : u8"返回选关 [Enter]", true);
     }
 
     void drawMenu() {
