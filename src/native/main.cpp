@@ -772,6 +772,12 @@ private:
         if (session->game.status == "won" && activeLevel) recordClear(*activeLevel);
     }
 
+    void finishResult() {
+        const bool orchard = activeLevel==0 && session->game.status=="won";
+        showMap();
+        if (orchard) openPage(7);
+    }
+
     void showMap() {
         pauseTimer();
         music.setExpedition(false);
@@ -1030,6 +1036,12 @@ private:
 
     void onKey(sf::Keyboard::Key key) {
         using Key = sf::Keyboard::Key;
+        if (folioPage>=0) {
+            if (key==Key::Escape) folioPage=-1;
+            else if (key==Key::Right || key==Key::Enter) turnPage(1);
+            else if (key==Key::Left) turnPage(-1);
+            return;
+        }
         if (key == Key::M) { music.toggle(); return; }
         if (heroDetail) {
             if (key == Key::Escape || key == Key::Enter) heroDetail = false;
@@ -1056,7 +1068,7 @@ private:
             return;
         }
         if (resultsMode) {
-            if (key == sf::Keyboard::Key::Enter || key == sf::Keyboard::Key::Escape) showMap();
+            if (key == Key::Enter || key == Key::Escape) finishResult();
             return;
         }
         if (mapMode) {
@@ -1112,6 +1124,12 @@ private:
     }
 
     void onMouse(sf::Vector2f point) {
+        if (folioPage>=0) {
+            if (BACK_BUTTON.contains(point)) folioPage=-1;
+            else if (previousPage.contains(point)) turnPage(-1);
+            else if (nextPage.contains(point)) turnPage(1);
+            return;
+        }
         if (MUSIC_BUTTON.contains(point) && music.available()) { music.toggle(); return; }
         if (heroDetail) {
             if (HERO_CLOSE.contains(point) || HERO_USE.contains(point)) heroDetail = false;
@@ -1136,10 +1154,12 @@ private:
             return;
         }
         if (resultsMode) {
-            if (CONTINUE_BUTTON.contains(point)) showMap();
+            if (CONTINUE_BUTTON.contains(point)) finishResult();
             return;
         }
         if (mapMode) {
+            if (bookButton.contains(point)) { openPage(0); return; }
+            if (cleared[0] && storyButton.contains(point)) { openPage(7); return; }
             if (MAP_HERO.contains(point)) { heroMode = true; return; }
             if (BACK_BUTTON.contains(point)) { mapMode = false; return; }
             for (std::size_t i = 0; i < LEVELS.size(); ++i) {
@@ -1184,7 +1204,46 @@ private:
         }
     }
 
+    int folioPage = -1;
+    sf::Texture folioArt;
+    const sf::FloatRect bookButton{{65,23},{210,44}}, storyButton{{300,23},{210,44}};
+    const sf::FloatRect previousPage{{420,785},{190,52}}, nextPage{{830,785},{190,52}};
+    const std::array<const char*,9> plates{"original-0","original-1","new-0","original-3","new-1","new-2","new-3","orchard-0","orchard-1"};
+    const std::array<const char*,9> titles{"长风鞭","幻影之泪","圆月弯刀","魔杖","梅花亮银枪","生死牌","虚空之剑","西圃秋记 · 三颗斑","西圃秋记 · 留一个梨"};
+    const std::array<const char*,9> captions{
+        "长鞭盘落，梢头还绕着半个圈。","金线拢住一滴蓝光，水滴里藏着另一重影子。",
+        "月纹沿着深蓝刀背，隐入弯曲的银光里。","杖顶的蓝晶像夜空里一颗碎星。",
+        "梅纹刻在银色枪头上，红穗从枪缨处垂下。","两面牌一明一暗。把它们并在一起，两个人像才会相望。",
+        "维蕾的剑。旧日的侧门边，绞盘上还留着剑尖的缺口。",
+        "妮娜把梨转了半圈：“你看，这面像你。鼻子旁边也有三颗。”",
+        "父亲摸了摸鼻子。妮娜把梨收进包里：“这个留给 Flora。花期我替她记好了。”"};
+    void openPage(int page) {
+        if (!folioArt.loadFromFile(assetPath((std::string("folio/")+plates[page]+".jpg").c_str()))) return;
+        folioArt.setSmooth(true);
+        folioPage=page;
+    }
+    void turnPage(int step) {
+        const int first=folioPage<7 ? 0 : 7, count=folioPage<7 ? 7 : 2;
+        openPage(first+(folioPage-first+step+count)%count);
+    }
+    void drawFolio() {
+        window.clear({29,31,33});
+        const bool story=folioPage>=7;
+        centeredLabel(window,titleFont(),titles[folioPage],{720,60},42,{247,220,169});
+        sf::Sprite art(folioArt);
+        const auto size=folioArt.getSize();
+        const float scale=std::min(1220.f/size.x,545.f/size.y);
+        art.setScale({scale,scale});
+        art.setPosition({(1440-size.x*scale)/2,110+(545-size.y*scale)/2});
+        window.draw(art);
+        centeredLabel(window,displayFont(),captions[folioPage],{720,710},24,{242,233,211});
+        centeredLabel(window,displayFont(),std::to_string(story?folioPage-6:folioPage+1)+(story?" / 2":" / 7"),{720,810},21,{211,196,164});
+        drawAntiqueButton(previousPage,"上一页");
+        drawAntiqueButton(nextPage,"下一页");
+        drawAntiqueButton(BACK_BUTTON,"返回 [Esc]");
+    }
     void draw() {
+        if (folioPage>=0) { drawFolio(); window.display(); return; }
         if (mapMode) {
             drawMap();
         } else if (!session || seedMode) {
@@ -1295,6 +1354,8 @@ private:
                           position+sf::Vector2f(0,65),15,{100,70,50});
         }
         drawButton(BACK_BUTTON, u8"返回 [Esc]");
+        drawButton(bookButton,"七件武器");
+        if (cleared[0]) drawButton(storyButton,"西圃秋记");
         drawButton(MAP_HERO,u8"换角色 [C]");
         const auto completed = std::count(cleared.begin(), cleared.end(), true);
         centeredLabel(window, mapFont, u8"已复苏 " + std::to_string(completed) + " / "
@@ -1494,7 +1555,7 @@ private:
             centeredLabel(window, font, notice, {720, 575}, 19, sf::Color(255, 156, 139));
         if (!progressSaved)
             centeredLabel(window, font, u8"通关进度未能保存", {720, 575}, 18, gold);
-        drawButton(CONTINUE_BUTTON, u8"返回选关 [Enter]", true);
+        drawButton(CONTINUE_BUTTON, activeLevel==0 && won ? u8"阅读西圃秋记 [Enter]" : u8"返回选关 [Enter]", true);
     }
 
     void drawMenu() {
