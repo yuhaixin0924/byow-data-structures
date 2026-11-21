@@ -27,7 +27,8 @@ public:
     struct Fog { int center; Time reforms{}; };
     static constexpr int hazardRadius = 2;
     static constexpr auto fogReformDelay = std::chrono::seconds(12);
-    static constexpr auto rainInterval = std::chrono::seconds(4);
+    static constexpr auto rainInterval = std::chrono::milliseconds(240);
+    static constexpr auto rainHitDelay = std::chrono::seconds(2);
 
 private:
     std::array<SearchResult, 3> searches{};
@@ -98,12 +99,14 @@ private:
                 }
             return;
         }
+        if (hazard == Hazard::Rain) {
+            auto origin = point(game.world.start);
+            origin.x += origin.x >= 5 ? -5 : 5;
+            rainFrom = rainTo = origin.id();
+            return;
+        }
         for (int cell : candidates) {
             if (manhattan(cell, game.world.start) <= hazardRadius + 1) continue;
-            if (hazard == Hazard::Rain) {
-                rainFrom = rainTo = cell;
-                break;
-            }
             if (std::any_of(fog.begin(), fog.end(), [cell](const Fog& patch) {
                 return manhattan(cell, patch.center) <= 2 * hazardRadius;
             })) continue;
@@ -188,7 +191,27 @@ private:
         int damage = 0;
         for (std::size_t i = 0; i < game.enemies.size(); ++i) {
             auto& enemy = game.enemies[i];
-            if (enemy.health <= 0 || enemy.kind == EnemyKind::Boss || enemy.kind == EnemyKind::Guard) continue;
+            if (enemy.health <= 0 || enemy.kind == EnemyKind::Guard) continue;
+            if (enemy.kind == EnemyKind::Boss) {
+                if (enemy.warningCell >= 0) {
+                    if (elapsed < enemy.nextHit) continue;
+                    if (enemy.warningCell == game.player) damage += enemy.damage;
+                    enemy.warningCell = -1;
+                    enemy.nextHit = elapsed + 1400ms;
+                    continue;
+                }
+                const int distance = manhattan(enemy.at, game.player);
+                if (distance == 1 && elapsed >= enemy.nextHit) {
+                    enemy.warningCell = game.player;
+                    enemy.nextHit = elapsed + 800ms;
+                } else if (distance > 1 && distance <= 9 && elapsed >= enemy.nextMove) {
+                    enemy.nextMove = elapsed + 850ms;
+                    const auto route = game.world.search(enemy.at, game.player, "BFS");
+                    if (route.path.size() > 2 && route.path.size() <= 11 &&
+                        !game.occupied(route.path[1], static_cast<int>(i))) enemy.at = route.path[1];
+                }
+                continue;
+            }
             if (!enemy.awake) {
                 const bool awaken = enemy.kind == EnemyKind::Puppet ? puppetsAwake :
                     manhattan(enemy.at, game.player) <= 2 && game.lineOfSight(game.player, enemy.at);
@@ -219,10 +242,10 @@ private:
         const auto center = rainCenter();
         const auto player = point(game.player);
         if (std::abs(center[0] - player.x) + std::abs(center[1] - player.y) > hazardRadius) return;
-        rainDamageAt = elapsed + rainInterval;
-        game.health = std::max(0, game.health - 8);
+        rainDamageAt = elapsed + rainHitDelay;
+        game.health = std::max(0, game.health - 10);
         if (game.health == 0) game.status = "lost";
-        notice = game.health ? u8"被暴雨淋湿，生命 −8。" : u8"暴雨耗尽了生命。";
+        notice = game.health ? u8"被暴雨淋湿，生命 −10。" : u8"暴雨耗尽了生命。";
     }
     void updateRain() {
         if (rainFrom < 0) return;

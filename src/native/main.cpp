@@ -46,7 +46,7 @@ const sf::FloatRect HELP_BUTTON({534, 625}, {177, 45});
 const sf::FloatRect HERO_BUTTON({729, 625}, {177, 45});
 const sf::FloatRect MODAL_BACK({417, 690}, {183, 56});
 const sf::FloatRect HELP_BACK({148, 736}, {166, 45});
-const sf::FloatRect ARMORY_BUTTON({534, 684}, {372, 45});
+
 const sf::FloatRect HELP_PAGE({1026, 736}, {260, 45});
 const sf::FloatRect BRIEF_GO({801, 690}, {222, 56});
 struct Hero {
@@ -828,8 +828,11 @@ private:
         if (session->game.status == "won" && activeLevel) {
             if (*activeLevel < relic::weapons.size() && !cleared[*activeLevel]) newWeapon = *activeLevel;
             recordClear(*activeLevel);
+            readingStory = true;
         }
     }
+
+    bool readingStory = false;
 
     void finishResult() {
         const bool orchard = activeLevel==0 && session->game.status=="won";
@@ -842,6 +845,7 @@ private:
         music.setExpedition(false);
         session.reset();
         activeLevel.reset();
+        readingStory = false;
         resultsMode = seedMode = autoWalk = briefing = paused = false;
         held.clear();
         mapMode = true;
@@ -929,6 +933,7 @@ private:
         ultimateUntil = {};
         shiftKeys = 0;
         activeLevel = level;
+        readingStory = level.has_value();
         cameraCenter = MAZE_AREA.getCenter();
         cameraZoom = 1.f;
         cameraUpdated = Clock::now();
@@ -1138,6 +1143,14 @@ private:
 
     void onKey(sf::Keyboard::Key key) {
         using Key = sf::Keyboard::Key;
+        if (readingStory) {
+            if (key == Key::Enter || key == Key::Space) readingStory = false;
+            else if (key == Key::Escape) {
+                readingStory = false;
+                if (briefing) cancelBriefing();
+            }
+            return;
+        }
         if (folioPage>=0) {
             if (key==Key::Escape) folioPage=-1;
             else if (key==Key::Right || key==Key::Enter) turnPage(1);
@@ -1177,6 +1190,7 @@ private:
             return;
         }
         if (mapMode) {
+            if (key==Key::V) { armory=true; return click(); }
             if (key == sf::Keyboard::Key::Escape) mapMode = false;
             else if (key == Key::C) heroMode = true;
             else if (key >= sf::Keyboard::Key::Num1 && key <= sf::Keyboard::Key::Num8) {
@@ -1206,7 +1220,6 @@ private:
             else if (key == Key::Tab) showMap();
             else if (key == Key::F1) { helpMode = true; weaponHelp = false; }
             else if (key == Key::C) heroMode = true;
-            else if (key == Key::V) armory = true;
             else return;
             return click();
         }
@@ -1240,6 +1253,11 @@ private:
     }
 
     void onMouse(sf::Vector2f point) {
+        if (readingStory) {
+            if (BRIEF_GO.contains(point)) readingStory = false;
+            else if (briefing && MODAL_BACK.contains(point)) cancelBriefing();
+            return;
+        }
         if (folioPage>=0) {
             if (BACK_BUTTON.contains(point)) folioPage=-1;
             else if (previousPage.contains(point)) turnPage(-1);
@@ -1285,6 +1303,8 @@ private:
             return;
         }
         if (mapMode) {
+            for (std::size_t i=0;i<weaponIcons.size();++i)
+                if (boardSlot(i).contains(point)) { openPage(i); return click(); }
             if (bookButton.contains(point)) { armory=true; return click(); }
             if (cleared[0] && storyButton.contains(point)) { openPage(7); return; }
             if (MAP_HERO.contains(point)) { heroMode = true; return; }
@@ -1310,7 +1330,6 @@ private:
             else if (MAP_BUTTON.contains(point)) showMap();
             else if (HELP_BUTTON.contains(point)) { helpMode = true; weaponHelp = false; }
             else if (HERO_BUTTON.contains(point)) heroMode = true;
-            else if (ARMORY_BUTTON.contains(point)) armory = true;
             else return;
             return click();
         }
@@ -1344,6 +1363,8 @@ private:
         }
     }
 
+    static sf::FloatRect boardSlot(std::size_t i) { return {{272.f+128.f*i,776.f},{124,52}}; }
+    std::array<SpriteAsset,7> weaponIcons{SpriteAsset("folio/original-0.jpg"),SpriteAsset("folio/original-1.jpg"),SpriteAsset("folio/new-0.jpg"),SpriteAsset("folio/original-3.jpg"),SpriteAsset("folio/new-1.jpg"),SpriteAsset("folio/new-2.jpg"),SpriteAsset("folio/new-3.jpg")};
     int folioPage = -1;
     sf::Texture folioArt;
     const sf::FloatRect bookButton{{65,23},{210,44}}, storyButton{{300,23},{210,44}};
@@ -1383,6 +1404,7 @@ private:
         drawAntiqueButton(BACK_BUTTON,"返回 [Esc]");
     }
     void draw() {
+        if (readingStory) { drawStory(); window.display(); return; }
         if (folioPage>=0) { drawFolio(); window.display(); return; }
         if (mapMode) {
             drawMap();
@@ -1499,12 +1521,16 @@ private:
         if (cleared[0]) drawButton(storyButton,"西圃秋记");
         drawButton(MAP_HERO,u8"换角色 [C]");
         const auto completed = std::count(cleared.begin(), cleared.end(), true);
-        centeredLabel(window, mapFont, u8"已复苏 " + std::to_string(completed) + " / "
-                      + std::to_string(LEVELS.size()) + u8" 朵花", {720, 837}, 26, ink);
-        centeredLabel(window, mapFont, completed == static_cast<int>(LEVELS.size())
-                      ? u8"八朵花已齐聚，花神的传说仍待揭晓。"
-                      : u8"八朵花齐聚之时，拼合碎片，召唤花神，寻回昔日花都。",
-                      {720, 872}, 17, ink);
+        for (std::size_t i=0;i<weaponIcons.size();++i) {
+            const auto bounds=boardSlot(i);
+            cutPanel(window,bounds,4,{245,232,204,245},{128,99,67});
+            weaponIcons[i].draw(window,bounds.position+sf::Vector2f(4,6),38,false,0,
+                                cleared[i]?sf::Color::White:sf::Color(161,157,150));
+            centeredLabel(window,displayFont(),relic::weapons[i].name,bounds.position+sf::Vector2f(81,15),15,ink);
+            centeredLabel(window,displayFont(),cleared[i]?"已获得":"第 "+std::to_string(i+1)+" 关",
+                          bounds.position+sf::Vector2f(81,36),14,ink);
+        }
+        centeredLabel(window,mapFont,"已复苏 "+std::to_string(completed)+" / 8 朵花",{720,863},23,ink);
     }
 
     void modal(const std::string& title) {
@@ -1530,11 +1556,43 @@ private:
         "两朵绢花标出了薄冰。弥娅留在风口，把人引向照相馆。","奥伦给四名伤员裹紧遮光布。快门响时，最小的那个抬起了手。",
         "维蕾用剑尖卡住绞盘。直到第四个伤员过桥，她才放下手。","心兽伏下，霜退了。矮凳旁的梨终于停在草地上。"};
 
+    void drawStory() {
+        const auto i = *activeLevel;
+        constexpr std::array<const char*,8> chapters{
+            "西圃秋记","照旧","天亮以前","在籍者全","红扇指路","留影","门楔","今年的梨"};
+        constexpr std::array<const char*,8> opening{
+            "风吹开了名册，纸角露出三个歪歪扭扭的日期。",
+            "门边的木牌早已换成住户的姓氏，公文上却还写着“空苗圃”。",
+            "医师家的门环上缠着布。深夜有人敲门，也不至于惊醒整条街。",
+            "碑刻的最后一行最清楚：“是夕开门，在籍者全。”",
+            "雪把石路和水面盖成了同一种颜色。有人循着红色走去。",
+            "照相馆的暗房空了。门槛上留下两道并排的车辙。",
+            "桥头的花灯还亮着。一辆板车正等着穿过侧门。",
+            "枝上的梨已经熟了。你听见果子落地，却总也等不到滚动的声音。"};
+        constexpr std::array<const char*,8> closing{
+            "“东边十二号，井边十四号，最小的十九号。”这年秋天，Flora 坐着吃完了梨。",
+            "Flora 当年写的是“今夜可引霜”。第四十七年的日期旁，只有两个新字：“照旧”。",
+            "父亲照常把凳子搬到 Flora 身边。这一次，谁也没有伸手去拿梨。",
+            "Flora 又写了一遍妮娜的名字。第二天名字淡了，那张普通的纸却好好地留着。",
+            "“花好看吧？回来再摘。”扇尖指着照相馆，最后一个行人也看清了方向。",
+            "快门把那只小手留在底片上。等到了西山，家人就能凭这张照片认出他们。",
+            "最后一个车轮上岸，维蕾才举手示意。她脚下的石板还在抖。",
+            "凳边留着一处空位。梨园安静下来，这个秋天终于可以往前走了。"};
+        window.clear({24,31,36});
+        drawSeasonLandscape({0,0},{1440,900});
+        box(window,{110,180},{1220,480},{23,30,34,235},{154,133,99});
+        centeredLabel(window,displayFont(),std::string(LEVELS[i].name)+(briefing?" · 入境":" · 通关"),{720,258},23,{211,197,165});
+        centeredLabel(window,titleFont(),chapters[i],{720,346},53,{248,221,166});
+        centeredLabel(window,displayFont(),briefing?opening[i]:afterStory[i],{720,460},24,{241,233,214});
+        centeredLabel(window,displayFont(),briefing?beforeStory[i]:closing[i],{720,527},23,{229,221,204});
+        if (briefing) drawButton(MODAL_BACK,"返回选关 [Esc]");
+        drawButton(BRIEF_GO,briefing?"关卡准备 [Enter]":"查看结算 [Enter]",true);
+    }
+
     void drawBriefing() {
         modal(activeLevel ? std::to_string(*activeLevel + 1) + "  " + LEVELS[*activeLevel].name : u8"自定义探险");
         if (activeLevel) {
             const auto i=*activeLevel;
-            centeredLabel(window,displayFont(),beforeStory[i],{720,272},19,{229,225,211});
             const std::string reward=i<relic::weapons.size() ?
                 std::string(cleared[i]?"已拥有 · ":"首次通关获得 · ")+relic::weapons[i].name : "终关奖励 · 霜冠之花";
             centeredLabel(window,displayFont(),reward,{720,307},18,{247,205,116});
@@ -1563,7 +1621,7 @@ private:
         using Hazard = relic::GameSession::Hazard;
         switch (session->hazard) {
         case Hazard::Fog: rule = u8"三处灰白迷雾，踏入眩晕 5 秒，12 秒后重聚。"; break;
-        case Hazard::Rain: rule = u8"暴雨每 4 秒朝你移动一格，淋雨扣 8 点生命。"; break;
+        case Hazard::Rain: rule = u8"乌云会追赶你。进入雨区扣 10 点生命，停留每 2 秒再扣一次。"; break;
         case Hazard::Mirror: rule = u8"约 8% 的地砖会触发传送，未收集的花也会移位。"; break;
         case Hazard::None: break;
         }
@@ -1663,7 +1721,7 @@ private:
         if (!guide) centeredLabel(window,type,"点选一行查看武器插画",{720,635},20,gold);
         if (guide) {
             text(window, type, u8"第 2 关  灰白迷雾遮路，踏入眩晕 5 秒，雾散后 12 秒重聚。", 174, 617, 19, light);
-            text(window, type, u8"第 3 关  暴雨每 4 秒朝你移动一格，进入雨区或持续淋雨扣 8 点生命。", 174, 652, 19, light);
+            text(window, type, u8"第 3 关  乌云追踪玩家，淋雨扣 10 点生命，持续淋雨每 2 秒再受伤。", 174, 652, 19, light);
             text(window, type, u8"第 4 关  约 8% 的地砖各传送一次，未收集的花会移到别处。", 174, 687, 19, light);
             drawAntiqueButton(HELP_PAGE, u8"游玩规则 [Tab]");
         }
@@ -1767,7 +1825,6 @@ private:
             centeredLabel(window, displayFont(), won ? u8"遗迹之花已复苏" : cleared[*activeLevel] ? u8"此前已复苏" : u8"花朵尚未绽放",
                           {895, 521}, 18, light);
         }
-        if (won && activeLevel) centeredLabel(window,displayFont(),afterStory[*activeLevel],{720,340},19,light);
         if (!won)
             centeredLabel(window, displayFont(), notice, {720, 575}, 19, sf::Color(255, 156, 139));
         if (newWeapon)
@@ -1797,8 +1854,6 @@ private:
         if (seedMode) {
             cutPanel(window, {{534, 420}, {372, 42}}, 8, {12, 18, 30}, {164, 139, 106});
             centeredLabel(window, menuFont, u8"地图种子  " + std::string(seedText).insert(seedCaret, "|"), {720, 441}, 23, light);
-        } else {
-            centeredLabel(window, menuFont, u8"循八朵花的踪迹，寻回失落的花都", {720, 439}, 23, light);
         }
 
         const bool playHovered = PLAY_BUTTON.contains(window.mapPixelToCoords(sf::Mouse::getPosition(window)));
@@ -1814,7 +1869,6 @@ private:
             drawAntiqueButton(MAP_BUTTON, u8"选择关卡 [Tab]");
             drawAntiqueButton(HELP_BUTTON, u8"玩法帮助 [F1]");
             drawAntiqueButton(HERO_BUTTON, u8"角色 [C]");
-            drawAntiqueButton(ARMORY_BUTTON, u8"武器库 [V]");
             centeredLabel(window, menuFont, u8"方向键 / WASD 移动     ·     空格 攻击", {720, 760}, 18, light);
         }
     }
@@ -2189,7 +2243,8 @@ private:
             const bool selected = nextWeapon == static_cast<int>(i);
             box(window, bounds.position, bounds.size, selected ? sf::Color(73, 59, 43) : sf::Color(36, 44, 54),
                 selected ? gold : sf::Color(64, 73, 82));
-            text(window, type, relic::weapons[i].name, bounds.position.x + 9, bounds.position.y + 3, 17, selected ? gold : muted);
+            weaponIcons[i].draw(window,bounds.position+sf::Vector2f(3,2),25);
+            text(window, type, relic::weapons[i].name, bounds.position.x + 34, bounds.position.y + 3, 17, selected ? gold : muted);
             const auto left = std::chrono::ceil<std::chrono::seconds>(session->cooldown(i)).count();
             centeredLabel(window, type, left ? std::to_string(left) + " s" : u8"就绪",
                           {bounds.position.x + 196, bounds.position.y + 14}, 16, left ? muted : gold);

@@ -294,19 +294,18 @@ public:
     void actExpeditionGuards() {
         for (int i = 0; i < static_cast<int>(enemies.size()); ++i) {
             auto& guard = enemies[i];
-            if (!guard.active() || (guard.kind != EnemyKind::Guard && guard.kind != EnemyKind::Boss)) continue;
+            if (!guard.active() || guard.kind != EnemyKind::Guard) continue;
             if (guard.warningCell >= 0) {
                 if (player == guard.warningCell) health = std::max(0, health - guard.damage);
                 guard.warningCell = -1;
                 continue;
             }
-            const int period = guard.kind == EnemyKind::Boss ? 6 : expeditionLevel < 4 ? 4 : 3;
+            const int period = expeditionLevel < 4 ? 4 : 3;
             if (turn % period != 0) continue;
             if (manhattan(guard.at, player) == 1) {
                 guard.warningCell = player;
                 continue;
             }
-            if (guard.kind == EnemyKind::Boss) continue;
             if (guard.at == guard.target) std::swap(guard.home, guard.target);
             const auto route = enemyPlan(guard);
             if (route.path.size() > 1 && !occupied(route.path[1], i) && route.path[1] != player)

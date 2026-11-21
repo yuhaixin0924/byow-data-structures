@@ -55,9 +55,9 @@ void testRain() {
     const auto initial = session.rainCenter();
     expect(std::abs(initial[0] - point(game.player).x) + std::abs(initial[1] - point(game.player).y) > 2,
            "rain should start away from spawn");
-    session.updateTime(4s);
-    expect(initial == session.rainCenter(), "rain should begin its move at the four-second boundary");
-    session.updateTime(6s);
+    session.updateTime(240ms);
+    expect(initial == session.rainCenter(), "rain should begin its move at the first tracking tick");
+    session.updateTime(360ms);
     auto halfway = session.rainCenter();
     expect(std::abs(halfway[0] - initial[0]) + std::abs(halfway[1] - initial[1]) == .5f,
            "rain must interpolate between tiles");
@@ -71,13 +71,13 @@ void testRain() {
     const int center = Point{static_cast<int>(initial[0]), static_cast<int>(initial[1])}.id();
     wet.player = center;
     damage.updateTime(0s);
-    expect(wet.health == 92, "entering rain must deal eight damage");
-    damage.updateTime(3999ms);
-    expect(wet.health == 92, "rain must not deal repeated instant damage");
+    expect(wet.health == 90, "entering rain must deal ten damage");
+    damage.updateTime(1999ms);
+    expect(wet.health == 90, "rain must not deal repeated instant damage");
+    damage.updateTime(2s);
+    expect(wet.health == 80, "staying in rain must deal damage after two seconds");
+    wet.health = 10;
     damage.updateTime(4s);
-    expect(wet.health == 84, "staying in rain must deal damage after four seconds");
-    wet.health = 8;
-    damage.updateTime(8s);
     expect(wet.health == 0 && wet.status == "lost", "fatal rain must end the session");
 }
 
@@ -202,6 +202,27 @@ void testLateLevels() {
     const std::array<int, 4> health{120, 180, 260, 400};
     for (int level = 4; level < 8; ++level) {
         GameSession session(seeds[level - 4], level, {true, true, true}, 83, 3);
+        {
+            auto encounter = session;
+            auto& world = encounter.game.world;
+            for (auto& enemy : encounter.game.enemies)
+                if (enemy.kind != EnemyKind::Boss) enemy.health = 0;
+            const int origin = encounter.boss()->at;
+            const int near = world.adjacency[origin].front();
+            for (int cell : world.adjacency[near]) if (manhattan(origin, cell) == 2) {
+                encounter.game.player = cell;
+                break;
+            }
+            encounter.updateTime(1s);
+            expect(manhattan(encounter.game.player, encounter.boss()->at) == 1, "boss approaches an idle player");
+            encounter.updateTime(1100ms);
+            expect(encounter.boss()->warningCell == encounter.game.player, "boss telegraphs before hitting");
+            const int hp = encounter.game.health;
+            encounter.updateTime(1850ms);
+            expect(encounter.game.health == hp, "boss respects dodge window");
+            encounter.updateTime(1900ms);
+            expect(encounter.game.health == hp - encounter.boss()->damage, "idle player takes exactly one boss hit");
+        }
         auto& game = session.game;
         expect(session.bossFlowerPending() && game.crystals.size() == 3 &&
                session.boss()->health == health[level - 4], "late levels must reserve the fourth flower for a boss");
