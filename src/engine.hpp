@@ -33,9 +33,15 @@ struct SearchResult {
     int cost = 0;
     double micros = 0;
 };
+enum class EnemyKind { Guard, Boss, Mummy, Ghost, Puppet };
 struct Enemy {
     int at, home, target, health = 2;
     int tier = 0, damage = 8, warningCell = -1;
+    EnemyKind kind = EnemyKind::Guard;
+    bool awake = true;
+    int appearance = -1;
+    std::chrono::milliseconds nextMove{}, nextHit{};
+    bool active() const { return awake && health > 0; }
 };
 
 enum Terrain { Rock, Floor, Sand, Bridge, Water, Rubble };
@@ -177,6 +183,7 @@ public:
 
 class Game {
 public:
+    static constexpr int expeditionAttackDamage = 10;
     World world;
     int player,health=100,turn=0,spent=0,collected=0,kills=0,steps=0;
     int stepLimit = INF, costLimit = INF, expeditionLevel = -1;
@@ -214,8 +221,16 @@ public:
             }
     }
     bool occupied(int id,int except=-1)const{
-        for(int i=0;i<int(enemies.size());++i)if(i!=except&&enemies[i].health>0&&enemies[i].at==id)return true;
+        for(int i=0;i<int(enemies.size());++i)if(i!=except&&enemies[i].active()&&enemies[i].at==id)return true;
         return false;
+    }
+    void damageEnemy(Enemy& enemy, int damage) {
+        if (enemy.health <= 0) return;
+        enemy.health = std::max(0, enemy.health - damage);
+        if (enemy.health == 0) {
+            enemy.warningCell = -1;
+            ++kills;
+        }
     }
     SearchResult enemyPlan(const Enemy& enemy) const {
         auto chase = world.search(enemy.at, player, "BFS");
@@ -247,8 +262,10 @@ public:
         ++turn;message="探索遗迹中……";
         if(command=='F'){
             bool hit=false;
-            for(auto& e:enemies)if(e.health>0&&manhattan(player,e.at)==1){
-                hit=true;if(--e.health==0){++kills;message="守卫已被击败。";}else message="击中守卫！再攻击一次。";
+            for(auto& e:enemies)if(e.active()&&manhattan(player,e.at)==1){
+                hit=true;
+                damageEnemy(e, expeditionLevel >= 0 ? expeditionAttackDamage : 1);
+                message = e.health == 0 ? "守卫已被击败。" : "击中守卫！再攻击一次。";
             }
             if(!hit)message="挥动光刃。相邻的守卫会受到伤害。";
         }else if(destination!=player){player=destination;++steps;spent+=movementCost(player, jump);}
@@ -277,17 +294,19 @@ public:
     void actExpeditionGuards() {
         for (int i = 0; i < static_cast<int>(enemies.size()); ++i) {
             auto& guard = enemies[i];
-            if (guard.health <= 0) continue;
+            if (!guard.active() || (guard.kind != EnemyKind::Guard && guard.kind != EnemyKind::Boss)) continue;
             if (guard.warningCell >= 0) {
                 if (player == guard.warningCell) health = std::max(0, health - guard.damage);
                 guard.warningCell = -1;
                 continue;
             }
-            if (turn % (expeditionLevel < 4 ? 4 : 3) != 0) continue;
+            const int period = guard.kind == EnemyKind::Boss ? 6 : expeditionLevel < 4 ? 4 : 3;
+            if (turn % period != 0) continue;
             if (manhattan(guard.at, player) == 1) {
                 guard.warningCell = player;
                 continue;
             }
+            if (guard.kind == EnemyKind::Boss) continue;
             if (guard.at == guard.target) std::swap(guard.home, guard.target);
             const auto route = enemyPlan(guard);
             if (route.path.size() > 1 && !occupied(route.path[1], i) && route.path[1] != player)

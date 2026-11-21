@@ -46,6 +46,8 @@ const sf::FloatRect HELP_BUTTON({534, 625}, {177, 45});
 const sf::FloatRect HERO_BUTTON({729, 625}, {177, 45});
 const sf::FloatRect MODAL_BACK({417, 690}, {183, 56});
 const sf::FloatRect HELP_BACK({148, 736}, {166, 45});
+const sf::FloatRect ARMORY_BUTTON({534, 684}, {372, 45});
+const sf::FloatRect HELP_PAGE({1026, 736}, {260, 45});
 const sf::FloatRect BRIEF_GO({801, 690}, {222, 56});
 struct Hero {
     const char* name;
@@ -89,7 +91,7 @@ const std::array<Level, 8> LEVELS{{
     {u8"初入遗迹", 2026, {156, 350}}, {u8"苔庭", 3142, {330, 479}},
     {u8"沉水小径", 836, {254, 659}}, {u8"琥珀石窟", 5017, {588, 289}},
     {u8"幽泉", 7129, {739, 493}}, {u8"古根密室", 9953, {1026, 658}},
-    {u8"长明殿", 4309, {1160, 285}}, {u8"霜冠之门", 15941, {1302, 498}}
+    {u8"长阳殿", 4309, {1160, 285}}, {u8"霜冠之门", 15941, {1302, 498}}
 }};
 constexpr std::array<std::array<int, 2>, 11> ROADS{{
     {0, 1}, {0, 2}, {1, 3}, {1, 4}, {2, 4}, {2, 5}, {3, 6},
@@ -97,7 +99,6 @@ constexpr std::array<std::array<int, 2>, 11> ROADS{{
 }};
 using Clock = std::chrono::steady_clock;
 constexpr auto STEP_TIME = std::chrono::milliseconds(125);
-const std::array<sf::Color, 4> BLOSSOM_COLORS{{{251, 111, 135}, {112, 205, 255}, {140, 233, 176}, {211, 154, 251}}};
 struct Season {
     const char* name;
     sf::Color sky, distant, ground, foliage, accent, floor, sand;
@@ -579,6 +580,43 @@ void drawGuard(sf::RenderWindow& window, sf::Vector2f pos) {
     box(window, pos + sf::Vector2f(10, 8), {2, 1}, sf::Color(249, 174, 87));
 }
 
+// A continuous density field gives moving wisps soft edges at every camera zoom.
+float fogNoise(float x, float y) {
+    const auto hash = [](int gx, int gy) {
+        uint32_t bits = static_cast<uint32_t>(gx) * 0x8da6b343u ^
+                        static_cast<uint32_t>(gy) * 0xd8163841u;
+        bits ^= bits >> 16;
+        bits *= 0x7feb352du;
+        bits ^= bits >> 15;
+        return (bits & 0xffffu) / 65535.f;
+    };
+    const auto blend = [](float a, float b, float t) { return a + (b - a) * t; };
+    const int ix = static_cast<int>(std::floor(x)), iy = static_cast<int>(std::floor(y));
+    const auto ease = [](float t) { return t * t * (3.f - 2.f * t); };
+    const float u = ease(x - ix), v = ease(y - iy);
+    return blend(blend(hash(ix, iy), hash(ix + 1, iy), u),
+                 blend(hash(ix, iy + 1), hash(ix + 1, iy + 1), u), v);
+}
+
+sf::Image makeFogImage() {
+    constexpr unsigned size = 192;
+    sf::Image image({size, size}, sf::Color::Transparent);
+    for (unsigned y = 0; y < size; ++y) for (unsigned x = 0; x < size; ++x) {
+        const float u = 2.f * x / (size - 1) - 1.f, v = 2.f * y / (size - 1) - 1.f;
+        const float warp = fogNoise(u * 2.3f + 11.f, v * 3.9f + 8.f);
+        const float coarse = fogNoise(u * 2.8f + 3.f, v * 5.2f + warp * 1.4f + 5.f);
+        const float fine = fogNoise(u * 6.f + 7.f, v * 12.f + warp * 2.f + 3.f);
+        const float body = std::clamp((.93f + warp * .17f - std::sqrt(u * u + v * v)) / .48f, 0.f, 1.f);
+        const float edge = std::clamp((1.f - std::max(std::abs(u), std::abs(v))) / .14f, 0.f, 1.f);
+        const float density = body * body * (3.f - 2.f * body) * edge *
+                              std::clamp(.44f + coarse * .62f + fine * .26f, 0.f, 1.f);
+        const auto shade = static_cast<uint8_t>(154.f + coarse * 56.f + fine * 29.f);
+        image.setPixel({x, y}, {shade, static_cast<uint8_t>(shade + 5),
+                               static_cast<uint8_t>(shade + 9), static_cast<uint8_t>(density * 255.f)});
+    }
+    return image;
+}
+
 struct SpriteAsset {
     unsigned frames = 1, columns = 1, rows = 1;
     std::optional<sf::Texture> texture;
@@ -602,7 +640,8 @@ struct SpriteAsset {
         texture(std::move(other.texture)) {
         if (other.sprite) sprite.emplace(*texture);
     }
-    bool draw(sf::RenderWindow& window, sf::Vector2f pos, float size, bool flip = false, unsigned frame = 0) {
+    bool draw(sf::RenderWindow& window, sf::Vector2f pos, float size, bool flip = false, unsigned frame = 0,
+              sf::Color tint = sf::Color::White) {
         if (!sprite) return false;
         const auto dimensions = texture->getSize();
         const int width = static_cast<int>(dimensions.x / columns);
@@ -614,6 +653,7 @@ struct SpriteAsset {
         const auto side = std::max(bounds.size.x, bounds.size.y);
         const float scale = size / side;
         sprite->setScale({flip ? -scale : scale, scale});
+        sprite->setColor(tint);
         sprite->setPosition(pos + sf::Vector2f((size - bounds.size.x * scale) / 2 +
                                                   (flip ? bounds.size.x * scale : 0.f),
                                               (size - bounds.size.y * scale) / 2));
@@ -634,6 +674,7 @@ class App {
     sf::Font calligraphy;
     sf::Font titleCalligraphy, blackletter;
     sf::Texture gothicHall, valley;
+    std::optional<sf::Texture> fogTexture;
     SpriteAsset flowers{"garden/flowers.png", 8, 4};
     SpriteAsset dormantFlowers{"garden/flowers-dormant.png", 8, 4};
     bool hasCalligraphy = false, hasGothicHall = false;
@@ -645,13 +686,18 @@ class App {
     Music music{assetPath("ruins-theme.wav"), assetPath("menu-theme.flac")};
     std::filesystem::path progressPath = progressFile();
     std::array<bool, LEVELS.size()> cleared{};
-    std::array<int, 4> blossomCells{};
+    std::optional<std::size_t> newWeapon;
     std::optional<std::size_t> activeLevel;
     std::string seedText, notice;
     bool seedMode = false, mapMode = false, resultsMode = false;
     bool autoWalk = false, showPath = true, progressSaved = true;
     bool overview = true, briefing = false, helpMode = false, heroMode = false, briefingFromMap = false;
     bool heroDetail = false, paused = false;
+    bool armory = false, weaponHelp = false;
+    unsigned shiftKeys = 0;
+    bool shiftCombo = false;
+    std::string ultimateTitle;
+    relic::GameSession::Time ultimateUntil{};
     bool jumpPose = false;
     int hero = 0;
     std::vector<sf::Keyboard::Key> held;
@@ -697,10 +743,9 @@ public:
             while (const auto event = window.pollEvent()) {
                 if (event->is<sf::Event::Closed>()) window.close();
                 if (const auto* size = event->getIf<sf::Event::Resized>()) resize(size->size);
-                if (event->is<sf::Event::FocusLost>()) { autoWalk = false; held.clear(); }
-                if (const auto* key = event->getIf<sf::Event::KeyReleased>())
-                    held.erase(std::remove(held.begin(), held.end(), key->code), held.end());
+                if (event->is<sf::Event::FocusLost>()) { autoWalk = false; held.clear(); shiftKeys = 0; }
                 checkCompletion();
+                if (const auto* key = event->getIf<sf::Event::KeyReleased>()) onKeyReleased(key->code);
                 if (const auto* key = event->getIf<sf::Event::KeyPressed>()) onKey(key->code);
                 if (const auto* entered = event->getIf<sf::Event::TextEntered>()) onText(entered->unicode);
                 if (const auto* mouse = event->getIf<sf::Event::MouseButtonPressed>())
@@ -761,15 +806,29 @@ private:
 
     void checkCompletion() {
         if (!session || resultsMode || briefing) return;
-        if (timerStarted) session->updateTime(std::chrono::duration_cast<std::chrono::seconds>(playTime()));
+        if (timerStarted) {
+            const int previousHealth = session->game.health;
+            const auto previousNotice = session->notice;
+            session->updateTime(gameTime());
+            if (session->notice != previousNotice) notice = session->notice;
+            if (session->game.health < previousHealth) {
+                notice = session->notice;
+                autoWalk = false;
+                playDamage(previousHealth);
+            }
+        }
         if (session->game.status == "playing") return;
         notice = session->notice;
         pauseTimer();
         autoWalk = false;
         seedMode = false;
         held.clear();
+        shiftKeys = 0;
         resultsMode = true;
-        if (session->game.status == "won" && activeLevel) recordClear(*activeLevel);
+        if (session->game.status == "won" && activeLevel) {
+            if (*activeLevel < relic::weapons.size() && !cleared[*activeLevel]) newWeapon = *activeLevel;
+            recordClear(*activeLevel);
+        }
     }
 
     void finishResult() {
@@ -794,6 +853,7 @@ private:
 
     void selectHero(int index) {
         hero = index;
+        if (session) session->setPlayerHero(hero, static_cast<int>(heroes.size()));
         std::error_code error;
         std::filesystem::create_directories(progressPath.parent_path(), error);
         std::ofstream choice(progressPath.parent_path() / "hero.txt");
@@ -805,6 +865,7 @@ private:
     void pauseGame() {
         pauseTimer();
         held.clear();
+        shiftKeys = 0;
         autoWalk = false;
         paused = true;
     }
@@ -855,12 +916,18 @@ private:
             for (std::size_t i = 0; i < LEVELS.size(); ++i)
                 if (LEVELS[i].seed == seed) { level = i; break; }
         }
-        session = std::make_unique<relic::GameSession>(seed, static_cast<int>(level.value_or(0)));
+        relic::GameSession::Arsenal arsenal{};
+        std::copy_n(cleared.begin(), arsenal.size(), arsenal.begin());
+        const auto hazardSeed = static_cast<uint32_t>(Clock::now().time_since_epoch().count());
+        session = std::make_unique<relic::GameSession>(seed, static_cast<int>(level.value_or(0)), arsenal, hazardSeed,
+                                                       hero, static_cast<int>(heroes.size()));
         briefingFromMap = mapMode;
         briefing = true;
         music.setExpedition(false);
         strikeStarted = {};
-        std::copy_n(session->game.crystals.begin(), blossomCells.size(), blossomCells.begin());
+        newWeapon.reset();
+        ultimateUntil = {};
+        shiftKeys = 0;
         activeLevel = level;
         cameraCenter = MAZE_AREA.getCenter();
         cameraZoom = 1.f;
@@ -896,6 +963,7 @@ private:
         if (!seedMode || code < U'0' || code > U'9' || seedText.size() >= 10) return;
         seedText.insert(seedCaret, 1, static_cast<char>(code));
         ++seedCaret;
+        music.play(Music::Cue::Tap);
     }
 
     float stepProgress(Clock::time_point now) const {
@@ -952,6 +1020,12 @@ private:
 
     void animateMove(int previous, bool jumping) {
         const int current = session->game.player;
+        if (session->didTeleport()) {
+            stepOrigin = tilePosition(current);
+            stepStarted = Clock::now() - STEP_TIME;
+            jumpPose = autoWalk = false;
+            return;
+        }
         if (current == previous) return;
         music.play(session->game.world.tile[current] == 2 ? Music::Cue::Sand : Music::Cue::Stone);
         const auto now = Clock::now();
@@ -969,11 +1043,12 @@ private:
     }
 
     void strike() {
+        if (session->stunLeft() > relic::GameSession::Time::zero()) return;
         if (Clock::now() - strikeStarted < strikeDuration) return;
         struckCount = 0;
         int toughest = 0;
         for (const auto& enemy : session->game.enemies) {
-            if (enemy.health > 0 && relic::manhattan(session->game.player, enemy.at) == 1) {
+            if (enemy.active() && relic::manhattan(session->game.player, enemy.at) == 1 && struckCount < struckCells.size()) {
                 struckCells[struckCount++] = enemy.at;
                 toughest = std::max(toughest, enemy.tier);
             }
@@ -1023,9 +1098,9 @@ private:
     }
 
     void moveManual(sf::Keyboard::Key key) {
-        using Key = sf::Keyboard::Key;
         nextManual = Clock::now() + std::chrono::milliseconds(145);
-        const bool jumping = sf::Keyboard::isKeyPressed(Key::LShift) || sf::Keyboard::isKeyPressed(Key::RShift);
+        const bool jumping = shiftKeys != 0;
+        if (jumping) shiftCombo = true;
         const int previous = session->game.player, previousHealth = session->game.health;
         session->act(direction(key), jumping);
         animateMove(previous, jumping);
@@ -1033,6 +1108,33 @@ private:
         playDamage(previousHealth);
         checkCompletion();
     }
+
+    relic::GameSession::Time gameTime() const {
+        return std::chrono::duration_cast<relic::GameSession::Time>(playTime());
+    }
+    static unsigned shiftBit(sf::Keyboard::Key key) {
+        using Key = sf::Keyboard::Key;
+        return key == Key::LShift ? 1u : key == Key::RShift ? 2u : 0u;
+    }
+    void onKeyReleased(sf::Keyboard::Key key) {
+        held.erase(std::remove(held.begin(), held.end(), key), held.end());
+        const unsigned bit = shiftBit(key);
+        if (!(shiftKeys & bit)) return;
+        shiftKeys &= ~bit;
+        if (shiftKeys || shiftCombo || !session || !timerStarted || resultsMode || paused ||
+            briefing || seedMode || heroMode || heroDetail) return;
+        const int previousHealth = session->game.health;
+        if (const auto* skill = session->releaseUltimate()) {
+            ultimateTitle = skill->skill;
+            ultimateUntil = gameTime() + std::chrono::milliseconds(1800);
+            music.playUltimate(static_cast<std::size_t>(skill - relic::weapons.data()));
+        }
+        notice = session->notice;
+        playDamage(previousHealth);
+        checkCompletion();
+    }
+
+    void click() { music.play(Music::Cue::Click); }
 
     void onKey(sf::Keyboard::Key key) {
         using Key = sf::Keyboard::Key;
@@ -1042,16 +1144,17 @@ private:
             else if (key==Key::Left) turnPage(-1);
             return;
         }
-        if (key == Key::M) { music.toggle(); return; }
+        if (key == Key::M) { music.toggle(); return click(); }
         if (heroDetail) {
-            if (key == Key::Escape || key == Key::Enter) heroDetail = false;
+            if (key == Key::Escape || key == Key::Enter) { heroDetail = false; click(); }
             return;
         }
-        if (helpMode || heroMode) {
-            if (key == Key::Escape) helpMode = heroMode = false;
+        if (helpMode || heroMode || armory) {
+            if (key == Key::Escape) { helpMode = heroMode = armory = false; click(); }
+            else if (helpMode && key == Key::Tab) { weaponHelp = !weaponHelp; click(); }
             else if (heroMode) {
                 const int index = static_cast<int>(key) - static_cast<int>(Key::Num1);
-                if (index >= 0 && index < static_cast<int>(heroes.size())) selectHero(index);
+                if (index >= 0 && index < static_cast<int>(heroes.size())) { selectHero(index); click(); }
             }
             return;
         }
@@ -1059,13 +1162,15 @@ private:
             if (key == Key::Enter) startChallenge();
             else if (key == Key::Escape) cancelBriefing();
             else if (key == Key::C) heroMode = true;
-            return;
+            else return;
+            return click();
         }
         if (paused) {
             if (key == Key::Escape || key == Key::Enter) resumeGame();
             else if (key == Key::C) heroMode = true;
             else if (key == Key::Tab) showMap();
-            return;
+            else return;
+            return click();
         }
         if (resultsMode) {
             if (key == Key::Enter || key == Key::Escape) finishResult();
@@ -1077,12 +1182,12 @@ private:
             else if (key >= sf::Keyboard::Key::Num1 && key <= sf::Keyboard::Key::Num8) {
                 const auto index = static_cast<std::size_t>(static_cast<int>(key) - static_cast<int>(sf::Keyboard::Key::Num1));
                 beginGame(LEVELS[index].seed, index);
-            }
-            return;
+            } else return;
+            return click();
         }
         if (key == sf::Keyboard::Key::Escape) {
-            if (seedMode) closeSeedMenu();
-            else if (session) pauseGame();
+            if (seedMode) { closeSeedMenu(); click(); }
+            else if (session) { pauseGame(); click(); }
             autoWalk = false;
             held.clear();
             return;
@@ -1092,21 +1197,30 @@ private:
             else if (key == sf::Keyboard::Key::Backspace && seedCaret > 0) { seedText.erase(--seedCaret, 1); }
             else if (key == sf::Keyboard::Key::Left && seedCaret > 0) --seedCaret;
             else if (key == sf::Keyboard::Key::Right && seedCaret < seedText.size()) ++seedCaret;
-            return;
+            else return;
+            return click();
         }
-        if (key == sf::Keyboard::Key::N) { chooseSeed(); return; }
+        if (key == Key::N) { chooseSeed(); return click(); }
         if (!session) {
             if (key == sf::Keyboard::Key::Enter) showMap();
             else if (key == Key::Tab) showMap();
-            else if (key == Key::F1) helpMode = true;
+            else if (key == Key::F1) { helpMode = true; weaponHelp = false; }
             else if (key == Key::C) heroMode = true;
+            else if (key == Key::V) armory = true;
+            else return;
+            return click();
+        }
+        if (key == Key::C) { pauseGame(); heroMode = true; return click(); }
+        if (key != Key::E) autoWalk = false;
+        if (const unsigned bit = shiftBit(key)) {
+            if (!shiftKeys) shiftCombo = !held.empty() || session->stunLeft() > relic::GameSession::Time::zero();
+            shiftKeys |= bit;
             return;
         }
-        if (key == Key::C) { pauseGame(); heroMode = true; return; }
-        if (key != Key::E) autoWalk = false;
         if (direction(key)) {
             held.erase(std::remove(held.begin(), held.end(), key), held.end());
             held.push_back(key);
+            music.play(Music::Cue::Tap);
             moveManual(key);
             return;
         }
@@ -1116,8 +1230,10 @@ private:
         else if (key == sf::Keyboard::Key::H) showPath = !showPath;
         else if (key == sf::Keyboard::Key::Tab) { overview = !overview; revealUntil = Clock::now(); }
         else if (key == Key::E) { held.clear(); autoWalk = !autoWalk; nextStep = Clock::now(); }
-        else if (key == sf::Keyboard::Key::Space || key == sf::Keyboard::Key::F) strike();
+        else if (key == Key::Space || key == Key::F) strike();
         else if (key == sf::Keyboard::Key::Period) session->waitTurn();
+        else return;
+        if (key != Key::Space && key != Key::F) click();
         notice = session->notice;
         playDamage(previousHealth);
         checkCompletion();
@@ -1130,35 +1246,46 @@ private:
             else if (nextPage.contains(point)) turnPage(1);
             return;
         }
-        if (MUSIC_BUTTON.contains(point) && music.available()) { music.toggle(); return; }
+        if (MUSIC_BUTTON.contains(point) && music.available()) { music.toggle(); return click(); }
         if (heroDetail) {
-            if (HERO_CLOSE.contains(point) || HERO_USE.contains(point)) heroDetail = false;
+            if (HERO_CLOSE.contains(point) || HERO_USE.contains(point)) { heroDetail = false; click(); }
+            return;
+        }
+        if (armory) {
+            if (point.x>=150 && point.x<=1290 && point.y>=268 && point.y<527) {
+                openPage(static_cast<int>((point.y-268)/37));
+                return click();
+            }
+            if (HELP_BACK.contains(point)) { armory = false; click(); }
             return;
         }
         if (helpMode || heroMode) {
-            if ((heroMode ? HERO_BACK : HELP_BACK).contains(point)) helpMode = heroMode = false;
+            if ((heroMode ? HERO_BACK : HELP_BACK).contains(point)) { helpMode = heroMode = false; click(); }
+            else if (helpMode && HELP_PAGE.contains(point)) { weaponHelp = !weaponHelp; click(); }
             else if (heroMode) for (int i = 0; i < static_cast<int>(heroes.size()); ++i)
-                if (heroCard(i).contains(point)) { selectHero(i); break; }
+                if (heroCard(i).contains(point)) { selectHero(i); return click(); }
             return;
         }
         if (briefing) {
             if (BRIEF_GO.contains(point)) startChallenge();
-            if (MODAL_BACK.contains(point)) cancelBriefing();
-            if (BRIEF_HERO.contains(point)) heroMode = true;
-            return;
+            else if (MODAL_BACK.contains(point)) cancelBriefing();
+            else if (BRIEF_HERO.contains(point)) heroMode = true;
+            else return;
+            return click();
         }
         if (paused) {
             if (RESUME.contains(point)) resumeGame();
             else if (RESELECT_LEVEL.contains(point)) showMap();
             else if (BRIEF_HERO.contains(point)) heroMode = true;
-            return;
+            else return;
+            return click();
         }
         if (resultsMode) {
             if (CONTINUE_BUTTON.contains(point)) finishResult();
             return;
         }
         if (mapMode) {
-            if (bookButton.contains(point)) { openPage(0); return; }
+            if (bookButton.contains(point)) { armory=true; return click(); }
             if (cleared[0] && storyButton.contains(point)) { openPage(7); return; }
             if (MAP_HERO.contains(point)) { heroMode = true; return; }
             if (BACK_BUTTON.contains(point)) { mapMode = false; return; }
@@ -1166,7 +1293,7 @@ private:
                 const auto delta = point - LEVELS[i].position;
                 if (flowerHit(delta)) {
                     beginGame(LEVELS[i].seed, i);
-                    return;
+                    return click();
                 }
             }
             return;
@@ -1174,20 +1301,32 @@ private:
         if (seedMode) {
             if (PLAY_BUTTON.contains(point)) beginCustomGame();
             else if (SEED_BUTTON.contains(point)) closeSeedMenu();
-            return;
+            else return;
+            return click();
         }
         if (!session) {
             if (PLAY_BUTTON.contains(point)) showMap();
             else if (SEED_BUTTON.contains(point)) chooseSeed();
             else if (MAP_BUTTON.contains(point)) showMap();
-            else if (HELP_BUTTON.contains(point)) helpMode = true;
+            else if (HELP_BUTTON.contains(point)) { helpMode = true; weaponHelp = false; }
             else if (HERO_BUTTON.contains(point)) heroMode = true;
-            return;
+            else if (ARMORY_BUTTON.contains(point)) armory = true;
+            else return;
+            return click();
         }
-        if (PAUSE_BUTTON.contains(point)) { pauseGame(); return; }
-        if (point.y >= 414 && point.y < 452 && point.x >= SIDEBAR_CONTENT_X && point.x < SIDEBAR_CONTENT_X + 3 * ALGORITHM_BUTTON_STEP) {
+        if (PAUSE_BUTTON.contains(point)) { pauseGame(); return click(); }
+        if (!session->weaponRotationEnabled() && weaponRotationButton().contains(point)) {
+            session->resumeWeaponRotation();
+            return click();
+        }
+        for (std::size_t i = 0; i < relic::weapons.size(); ++i)
+            if (session->hasWeapon(i) && weaponRow(i).contains(point)) {
+                session->selectWeapon(static_cast<int>(i));
+                return click();
+            }
+        if (point.y >= 365 && point.y < 398 && point.x >= SIDEBAR_CONTENT_X && point.x < SIDEBAR_CONTENT_X + 3 * ALGORITHM_BUTTON_STEP) {
             const int index = static_cast<int>((point.x - SIDEBAR_CONTENT_X) / ALGORITHM_BUTTON_STEP);
-            session->setAlgorithm(index); autoWalk = false; return;
+            session->setAlgorithm(index); autoWalk = false; return click();
         }
         if (!MAZE_AREA.contains(point)) return;
         const auto mapPoint = mazeView.getCenter() - mazeView.getSize() / 2.f +
@@ -1201,6 +1340,7 @@ private:
             autoWalk = false;
             const auto result = session->route();
             notice = result.path.empty() ? u8"无法到达此处。" : u8"已选定目标，按 E 自动行走。";
+            click();
         }
     }
 
@@ -1252,7 +1392,7 @@ private:
             window.clear(sf::Color(12, 16, 21));
             drawSeasonLandscape({0,82},{1440,818});
             box(window, {0, 0}, {WINDOW_W, 82}, sf::Color(24, 31, 39));
-            text(window, font, activeLevel ? LEVELS[*activeLevel].name : u8"自定义探险", 32, 25, 28);
+            text(window, displayFont(), activeLevel ? LEVELS[*activeLevel].name : u8"自定义探险", 32, 25, 28);
             text(window, font, currentSeason().name, 357, 32, 19, currentSeason().accent);
             polygon(window, {{566, 0}, {874, 0}, {845, 82}, {595, 82}}, sf::Color(111, 85, 50));
             polygon(window, {{573, 0}, {867, 0}, {840, 76}, {600, 76}}, sf::Color(15, 22, 29));
@@ -1273,6 +1413,7 @@ private:
             if (briefing) drawBriefing();
         }
         if (helpMode) drawHelp();
+        if (armory) drawWeapons(false);
         if (heroMode) drawHeroPicker();
         if (heroDetail) drawHeroDetails();
         if (music.available()) {
@@ -1354,7 +1495,7 @@ private:
                           position+sf::Vector2f(0,65),15,{100,70,50});
         }
         drawButton(BACK_BUTTON, u8"返回 [Esc]");
-        drawButton(bookButton,"七件武器");
+        drawButton(bookButton,"武器看板");
         if (cleared[0]) drawButton(storyButton,"西圃秋记");
         drawButton(MAP_HERO,u8"换角色 [C]");
         const auto completed = std::count(cleared.begin(), cleared.end(), true);
@@ -1371,15 +1512,33 @@ private:
         box(window, {0, 0}, {WINDOW_W, WINDOW_H}, sf::Color(7, 12, 19, 198));
         box(window, {388, 154}, {664, 620}, sf::Color(23, 32, 41), sf::Color(155, 120, 67));
         box(window, {410, 175}, {620, 2}, sf::Color(155, 120, 67));
-        centeredLabel(window, font, title, {720, 231}, 38, gold, true);
+        centeredLabel(window, displayFont(), title, {720, 231}, 38, gold, true);
     }
 
     void drawHeroChoice() {
         drawAntiqueButton(BRIEF_HERO, std::string(u8"换角色 [C]  ·  ") + HEROES[hero].name);
     }
 
+    const std::array<const char*,8> beforeStory{
+        "西圃梨园的矮凳旁，压着一张折过的纸。是谁留下的？","苔庭的旧令上，为什么挤着几十个不同的年份？",
+        "雨水漫进石阶，有人曾抱着孩子沿这条路去敲医师的门。","石窟里立着一块灾碑。把拓片和花名册放在一起看看。",
+        "岔口开着两朵红花。弥娅举起扇子，却指向另一边。","一张模糊的底片上，四个人挤在同一辆板车里。",
+        "侧门的绞盘停在半空，齿间闪着一点碎银。","霜冠之门后，秋梨一遍遍落下。树旁的矮凳为谁留着？"};
+    const std::array<const char*,8> afterStory{
+        "妮娜记下了三棵树的花期。明年，花神就能坐下来吃完一个梨。","当年只许引霜一夜。西圃早有了人家，神殿却仍年年批下“照旧”。",
+        "医师记下了西圃的地址。那一夜，妮娜没能等到天亮。","碑上写着“在籍者全”。册上的名字淡了，夹页上的花期还在。",
+        "两朵绢花标出了薄冰。弥娅留在风口，把人引向照相馆。","奥伦给四名伤员裹紧遮光布。快门响时，最小的那个抬起了手。",
+        "维蕾用剑尖卡住绞盘。直到第四个伤员过桥，她才放下手。","心兽伏下，霜退了。矮凳旁的梨终于停在草地上。"};
+
     void drawBriefing() {
         modal(activeLevel ? std::to_string(*activeLevel + 1) + "  " + LEVELS[*activeLevel].name : u8"自定义探险");
+        if (activeLevel) {
+            const auto i=*activeLevel;
+            centeredLabel(window,displayFont(),beforeStory[i],{720,272},19,{229,225,211});
+            const std::string reward=i<relic::weapons.size() ?
+                std::string(cleared[i]?"已拥有 · ":"首次通关获得 · ")+relic::weapons[i].name : "终关奖励 · 霜冠之花";
+            centeredLabel(window,displayFont(),reward,{720,307},18,{247,205,116});
+        }
         const auto& limits = session->limits;
         const std::array<std::string, 3> labels{u8"时间上限", u8"步数上限", u8"地形消耗上限"};
         const std::array<std::string, 3> values{formatTime(std::chrono::seconds(limits.seconds)),
@@ -1391,19 +1550,40 @@ private:
             centeredLabel(window, font, labels[i], {x + 97.5f, 353}, 17, sf::Color(191, 217, 213));
             centeredLabel(window, font, values[i], {x + 97.5f, 400}, 34, gold, true);
         }
-        const auto& guards = session->game.enemies;
-        std::string damage = std::to_string(guards.front().damage);
-        if (guards.back().damage != guards.front().damage) damage += "–" + std::to_string(guards.back().damage);
-        centeredLabel(window, font, u8"守卫单次伤害  " + damage, {720, 488}, 21, sf::Color(233, 168, 145));
+        const int level = session->game.expeditionLevel;
+        const int guardCount = relic::GameSession::guardCount(level);
+        const auto low = relic::GameSession::guardDamage(relic::GameSession::guardTier(level, 0));
+        const auto high = relic::GameSession::guardDamage(relic::GameSession::guardTier(level, guardCount - 1));
+        const auto damage = low == high ? std::to_string(low) : std::to_string(low) + "–" + std::to_string(high);
+        centeredLabel(window, displayFont(), u8"守卫 " + std::to_string(guardCount) + u8" 名   单次伤害 " + damage,
+                      {720, 488}, 21, sf::Color(233, 168, 145));
         centeredLabel(window, font, u8"拾取时钟可增加 30 秒。确认后开始计时。",
                       {720, 546}, 19, sf::Color(210, 224, 224));
-        centeredLabel(window, font, u8"集齐四朵花后前往出口。", {720, 582}, 19, sf::Color(210, 224, 224));
+        const char* rule = u8"集齐四朵花后前往出口。";
+        using Hazard = relic::GameSession::Hazard;
+        switch (session->hazard) {
+        case Hazard::Fog: rule = u8"三处灰白迷雾，踏入眩晕 5 秒，12 秒后重聚。"; break;
+        case Hazard::Rain: rule = u8"暴雨每 4 秒朝你移动一格，淋雨扣 8 点生命。"; break;
+        case Hazard::Mirror: rule = u8"约 8% 的地砖会触发传送，未收集的花也会移位。"; break;
+        case Hazard::None: break;
+        }
+        if (level >= 4) {
+            constexpr std::array<const char*, 4> encounters{{
+                u8"小心两朵假花，误采会眩晕 5 秒。击败首领可拾取第四朵花。",
+                u8"四只木乃伊缓慢追踪，靠近会叠加伤害。第四朵花由首领掉落。",
+                u8"五只幽魂中三只藏在雕像里。击败首领后拾取第四朵花。",
+                u8"终极首领会唤醒三个棺材里的傀儡。击败它后拾取第四朵花。"
+            }};
+            rule = encounters[level - 4];
+        }
+        centeredLabel(window, displayFont(), rule, {720, 582}, 19, sf::Color(210, 224, 224));
         drawButton(MODAL_BACK, u8"返回 [Esc]");
         drawHeroChoice();
         drawButton(BRIEF_GO, u8"出发 [Enter]", true);
     }
 
     void drawHelp() {
+        if (weaponHelp) { drawWeapons(true); return; }
         using relic::GameSession;
         const auto& type = displayFont();
         const sf::Color gold(244, 212, 153), light(228, 227, 219), muted(186, 197, 201);
@@ -1418,7 +1598,7 @@ private:
             {u8"通关", u8"每关集齐四朵花并走到出口。出发后开始计时。", u8"拾取一个时钟增加 30 秒。"},
             {u8"移动", u8"方向键或 WASD 移动，成功移动一次计 1 步。", u8"地面耗 1，沙地耗 5，木桥耗 3。池水不可走。"},
             {u8"跳跃", u8"按住 Shift 加方向，跳过一格碎石，耗 3、计 1 步。", u8"落点须能站立，且没有守卫。"},
-            {u8"战斗", u8"空格或 F 攻击相邻守卫。看到红圈，下一回合闪开。", u8"守卫需打 2–5 次。药剂恢复 45 点生命。"},
+            {u8"战斗", u8"空格或 F 攻击相邻守卫，伤害 10。看到红圈就闪开。", u8"守卫需打 2–5 次。药剂恢复 45 点生命。"},
             {u8"寻路", u8"点地图设目标，按 1–3 切换算法，E 启停自动走。", u8"自动走会绕过碎石和池水，靠近守卫时停止。"},
             {u8"失败", u8"生命或时间归零，或尝试超出步数或消耗上限。", u8"步数和消耗正好等于上限时仍可通关。"}
         }};
@@ -1429,28 +1609,64 @@ private:
             text(window, type, rules[i][2], 221, y + 23, 16, muted);
         }
         constexpr std::array<float, 6> columns{817, 924, 993, 1068, 1139, 1233};
-        constexpr std::array<const char*, 6> headers{u8"关卡", u8"时限", u8"步数", u8"消耗", u8"时钟", u8"守卫伤害"};
+        constexpr std::array<const char*, 6> headers{u8"关卡", u8"时限", u8"步数", u8"消耗", u8"时钟", u8"守卫人数"};
         for (std::size_t i = 0; i < headers.size(); ++i)
             centeredLabel(window, type, headers[i], {columns[i], 262}, 17, gold);
         for (std::size_t i = 0; i < LEVELS.size(); ++i) {
             const auto level = static_cast<int>(i);
             const auto& limits = GameSession::challenges[i];
-            const auto damage = [level](int guard) { return std::to_string(GameSession::guardDamage(GameSession::guardTier(level, guard))); };
             const std::array<std::string, 6> cells{
                 std::to_string(i + 1) + "  " + LEVELS[i].name, formatTime(std::chrono::seconds(limits.seconds)),
                 std::to_string(limits.steps), std::to_string(limits.cost), std::to_string(GameSession::clockCount(level)),
-                damage(0) + "/" + damage(1) + "/" + damage(2)
+                std::to_string(GameSession::guardCount(level))
             };
             const float y = 294.f + i * 34.f;
             box(window, {744, y - 16}, {542, 32}, i % 2 ? sf::Color(25, 31, 44) : sf::Color(32, 40, 53));
             for (std::size_t column = 0; column < cells.size(); ++column)
                 centeredLabel(window, type, cells[column], {columns[column], y}, 18, light);
         }
-        text(window, type, u8"守卫伤害按三名守卫的单次命中列出。", 747, 558, 16, muted);
+        text(window, type, u8"第 5–8 关的第四朵花由首领掉落。", 747, 558, 16, muted);
+        text(window, type, u8"假花、木乃伊、雕像和棺材规则见各关出发说明。", 747, 581, 16, muted);
         cutPanel(window, {{149, 608}, {1142, 108}}, 10, {34, 32, 44}, {126, 106, 78});
         text(window, type, u8"八花齐聚", 169, 630, 25, gold);
         text(window, type, u8"每个预设关卡首次通关，会在花径复苏一朵遗迹之花。八关共八朵。", 321, 628, 20, light);
         text(window, type, u8"后续剧情中，八花齐聚便可拼合花神碎片，召唤花神，重返昔日花都，揭晓不为人知的历史。", 321, 665, 19, light);
+        drawAntiqueButton(HELP_BACK, u8"返回 [Esc]");
+        drawAntiqueButton(HELP_PAGE, u8"机关与武器 [Tab]");
+    }
+
+    void drawWeapons(bool guide) {
+        const auto& type = displayFont();
+        const sf::Color gold(244, 212, 153), light(228, 227, 219), muted(165, 178, 188);
+        box(window, {0, 0}, {WINDOW_W, WINDOW_H}, {7, 12, 19, 213});
+        frameTracery(window, {{112, 106}, {1216, 688}}, {18, 23, 34}, {176, 146, 107});
+        centeredLabel(window, titleFont(), guide ? u8"机关与武器" : u8"武器库", {720, 156}, 49, gold);
+        centeredLabel(window, type, u8"首次通关前七个预设关卡，对应武器就会进入武器库", {720, 207}, 22, light);
+        constexpr std::array<float, 5> columns{225, 424, 685, 895, 1115};
+        constexpr std::array<const char*, 5> headers{u8"通关奖励", u8"武器", u8"大招", u8"伤害", u8"状态"};
+        for (std::size_t i = 0; i < columns.size(); ++i)
+            centeredLabel(window, type, headers[i], {columns[i], 250}, 18, gold);
+        for (std::size_t i = 0; i < relic::weapons.size(); ++i) {
+            const auto& weapon = relic::weapons[i];
+            const float y = 284.f + 37.f * i;
+            box(window, {150, y - 16}, {1140, 34}, i % 2 ? sf::Color(24, 30, 42) : sf::Color(31, 39, 52));
+            const std::array<std::string, 5> cells{
+                u8"第 " + std::to_string(i + 1) + u8" 关", weapon.name,
+                std::string(weapon.skill) + (weapon.wholeMaze ? u8" · 全图" : ""),
+                std::to_string(weapon.damage), cleared[i] ? u8"已解锁" : u8"未解锁"
+            };
+            for (std::size_t j = 0; j < cells.size(); ++j)
+                centeredLabel(window, type, cells[j], {columns[j], y}, 20, j == 4 && !cleared[i] ? muted : light);
+        }
+        text(window, type, u8"单按 Shift 松开施放，武器从低到高自动轮换。右侧点选可锁定武器，再点「恢复轮换」切回。", 174, 539, 20, light);
+        text(window, type, u8"武器各自冷却 30 秒。幻泪之域命中全图，其他大招命中相邻敌人。挥空不消耗冷却。", 174, 571, 19, muted);
+        if (!guide) centeredLabel(window,type,"点选一行查看武器插画",{720,635},20,gold);
+        if (guide) {
+            text(window, type, u8"第 2 关  灰白迷雾遮路，踏入眩晕 5 秒，雾散后 12 秒重聚。", 174, 617, 19, light);
+            text(window, type, u8"第 3 关  暴雨每 4 秒朝你移动一格，进入雨区或持续淋雨扣 8 点生命。", 174, 652, 19, light);
+            text(window, type, u8"第 4 关  约 8% 的地砖各传送一次，未收集的花会移到别处。", 174, 687, 19, light);
+            drawAntiqueButton(HELP_PAGE, u8"游玩规则 [Tab]");
+        }
         drawAntiqueButton(HELP_BACK, u8"返回 [Esc]");
     }
 
@@ -1535,7 +1751,7 @@ private:
         box(window, {340, 185}, {760, 520}, sf::Color(23, 32, 41), sf::Color(156, 124, 73));
         box(window, {358, 203}, {724, 2}, sf::Color(156, 124, 73));
         centeredLabel(window, font, won ? u8"探险完成" : u8"探险结束", {720, 254}, 43, gold, true);
-        centeredLabel(window, font, activeLevel ? LEVELS[*activeLevel].name : u8"自定义探险",
+        centeredLabel(window, displayFont(), activeLevel ? LEVELS[*activeLevel].name : u8"自定义探险",
                       {720, 301}, 22, light);
         const std::array<std::string, 4> labels{u8"用时", u8"花朵", u8"步数", u8"地形消耗"};
         const std::array<std::string, 4> values{formatTime(playTime()), std::to_string(game.collected) + " / 4",
@@ -1551,10 +1767,14 @@ private:
             centeredLabel(window, displayFont(), won ? u8"遗迹之花已复苏" : cleared[*activeLevel] ? u8"此前已复苏" : u8"花朵尚未绽放",
                           {895, 521}, 18, light);
         }
+        if (won && activeLevel) centeredLabel(window,displayFont(),afterStory[*activeLevel],{720,340},19,light);
         if (!won)
-            centeredLabel(window, font, notice, {720, 575}, 19, sf::Color(255, 156, 139));
+            centeredLabel(window, displayFont(), notice, {720, 575}, 19, sf::Color(255, 156, 139));
+        if (newWeapon)
+            centeredLabel(window, displayFont(), u8"新武器   " + std::string(relic::weapons[*newWeapon].name),
+                          {720, 575}, 25, gold);
         if (!progressSaved)
-            centeredLabel(window, font, u8"通关进度未能保存", {720, 575}, 18, gold);
+            centeredLabel(window, font, u8"通关进度未能保存", {720, 682}, 18, gold);
         drawButton(CONTINUE_BUTTON, activeLevel==0 && won ? u8"阅读西圃秋记 [Enter]" : u8"返回选关 [Enter]", true);
     }
 
@@ -1594,7 +1814,113 @@ private:
             drawAntiqueButton(MAP_BUTTON, u8"选择关卡 [Tab]");
             drawAntiqueButton(HELP_BUTTON, u8"玩法帮助 [F1]");
             drawAntiqueButton(HERO_BUTTON, u8"角色 [C]");
-            centeredLabel(window, menuFont, u8"方向键 / WASD 移动     ·     空格 攻击", {720, 718}, 18, light);
+            drawAntiqueButton(ARMORY_BUTTON, u8"武器库 [V]");
+            centeredLabel(window, menuFont, u8"方向键 / WASD 移动     ·     空格 攻击", {720, 760}, 18, light);
+        }
+    }
+
+    static sf::FloatRect weaponRow(std::size_t index) {
+        return {{SIDEBAR_CONTENT_X, 455.f + 32.f * index}, {231.f, 29.f}};
+    }
+    static sf::FloatRect weaponRotationButton() {
+        return {{SIDEBAR_CONTENT_X + 142.f, 419.f}, {89.f, 29.f}};
+    }
+
+    void drawWeather() {
+        using Hazard = relic::GameSession::Hazard;
+        constexpr int radius = relic::GameSession::hazardRadius;
+        const float time = std::chrono::duration<float>(playTime()).count();
+        if (session->hazard == Hazard::None || session->hazard == Hazard::Mirror) return;
+        if (!fogTexture) {
+            fogTexture.emplace(makeFogImage());
+            fogTexture->setSmooth(true);
+        }
+        if (session->hazard == Hazard::Fog) {
+            for (const auto& patch : session->fogPatches()) {
+                float strength = 1.f, spread = 1.f;
+                if (patch.reforms != relic::GameSession::Time::zero()) {
+                    const auto sinceReform = gameTime() - patch.reforms;
+                    if (sinceReform < relic::GameSession::Time::zero()) {
+                        const float dispersal = std::clamp(std::chrono::duration<float>(
+                            sinceReform + relic::GameSession::fogReformDelay).count() / .9f, 0.f, 1.f);
+                        strength = (1.f - dispersal) * (1.f - dispersal);
+                        spread += dispersal * .42f;
+                    } else {
+                        strength = std::clamp(std::chrono::duration<float>(sinceReform).count() / .85f, 0.f, 1.f);
+                    }
+                }
+                if (strength <= 0.f) continue;
+                const auto center = tilePosition(patch.center) + sf::Vector2f(TILE * .5f, TILE * .5f);
+                const float phase = time + patch.center * .131f;
+                for (int layer = 0; layer < 3; ++layer) {
+                    const float drift = phase * (.33f + layer * .13f) + layer * 2.39f;
+                    const float reach = TILE * (radius + 1.8f) * spread;
+                    sf::Sprite mist(*fogTexture);
+                    const auto size = sf::Vector2f(fogTexture->getSize());
+                    mist.setOrigin(size / 2.f);
+                    const sf::Vector2f scale{reach * (2.f + layer * .19f) / size.x,
+                                             reach * (1.91f - layer * .19f) / size.y};
+                    mist.setScale({layer == 1 ? -scale.x : scale.x, scale.y});
+                    mist.setPosition(center + sf::Vector2f(std::sin(drift) * (4.f + layer * 4.f),
+                                     std::cos(drift * .73f) * 6.f + (layer - 1) * 7.f));
+                    mist.setRotation(sf::degrees(std::sin(drift * .55f) * 9.f + (layer - 1) * 13.f));
+                    const std::array<uint8_t, 3> opacity{253, 219, 177};
+                    mist.setColor(alpha(sf::Color::White, static_cast<uint8_t>(opacity[layer] * strength)));
+                    window.draw(mist);
+                }
+            }
+        }
+        if (session->hazard == Hazard::Rain) {
+            const auto center = session->rainCenter();
+            const auto p = sf::Vector2f(MAP_X + (center[0] + .5f) * TILE, MAP_Y + (center[1] + .5f) * TILE);
+            const float reach = TILE * radius;
+            softLight(window, p, {reach * 1.18f, reach}, {38, 62, 83, 112});
+            sf::VertexArray drops(sf::PrimitiveType::Lines);
+            const float wind = 3.4f + std::sin(time * 1.3f) * .9f;
+            for (int i = 0; i < 76; ++i) {
+                // Keep landing points inside the rain region while streaks fall from above.
+                const float x = ((i * 43) % 79 - 39) / 39.f * reach;
+                const float halfHeight = reach - std::abs(x);
+                const float across = std::fmod(i * .381966f, 1.f);
+                const sf::Vector2f landing = p + sf::Vector2f(x, (2.f * across - 1.f) * halfHeight);
+                const float cycle = std::fmod(time * (2.0f + (i % 7) * .16f) + i * .618034f, 1.f);
+                const float length = 5.f + i % 8;
+                if (cycle < .88f) {
+                    const float height = 1.f - cycle / .88f;
+                    const sf::Vector2f tip = landing + sf::Vector2f(height * wind * 3.f, -height * 40.f);
+                    drops.append({tip + sf::Vector2f(wind, -length), {153, 194, 218, 17}});
+                    drops.append({tip, {192, 226, 245, static_cast<uint8_t>(108 + i % 61)}});
+                } else if (i % 3 == 0) {
+                    const float splash = (cycle - .88f) / .12f;
+                    sf::CircleShape ripple(1.f + splash * 3.f, 14);
+                    ripple.setOrigin({ripple.getRadius(), ripple.getRadius()});
+                    ripple.setPosition(landing);
+                    ripple.setScale({1.f, .43f});
+                    ripple.setFillColor(sf::Color::Transparent);
+                    ripple.setOutlineThickness(.65f);
+                    ripple.setOutlineColor({174, 218, 242, static_cast<uint8_t>(146.f * (1.f - splash))});
+                    window.draw(ripple);
+                }
+            }
+            window.draw(drops);
+
+            const auto textureSize = sf::Vector2f(fogTexture->getSize());
+            for (int cloud = 0; cloud < 3; ++cloud) {
+                const float phase = time * .62f + cloud * 2.4f;
+                const auto cloudCenter = p + sf::Vector2f((cloud - 1) * 23.f + 4.f * std::sin(phase),
+                    -36.f - (cloud == 1 ? 8.f : 0.f) + 3.f * std::cos(phase));
+                const float width = cloud == 1 ? 64.f : 51.f;
+                sf::Sprite vapor(*fogTexture);
+                vapor.setOrigin(textureSize / 2.f);
+                vapor.setScale({width / textureSize.x, 32.f / textureSize.y});
+                vapor.setPosition(cloudCenter + sf::Vector2f(0, 4.f));
+                vapor.setColor({51, 63, 83, 239});
+                window.draw(vapor);
+                vapor.setRotation(sf::degrees((cloud - 1) * 12.f));
+                vapor.setPosition(cloudCenter - sf::Vector2f(2.f, 2.f));
+                vapor.setColor({126, 143, 162, 214});
+                window.draw(vapor);
+            }
         }
     }
 
@@ -1639,6 +1965,14 @@ private:
             box(window, pos + sf::Vector2f(1, 1), {TILE - 3, 1},
                 alpha(season.accent, 55));
         }
+        if (session->hazard == relic::GameSession::Hazard::Mirror) {
+            for (int cell = 0; cell < relic::CELLS; ++cell) if (session->mirrorAt(cell)) {
+                const auto p = tilePosition(cell) + sf::Vector2f(9.5f, 9.5f);
+                polygon(window, {p + sf::Vector2f(-5, 0), p + sf::Vector2f(0, -5),
+                                 p + sf::Vector2f(5, 0), p + sf::Vector2f(0, 5)}, {174, 157, 223, 100});
+                box(window, p - sf::Vector2f(1, 2), {2, 4}, {232, 215, 249, 170});
+            }
+        }
         // Paint behind every interactive object and route marker, inside the maze view.
         const float seconds = std::chrono::duration<float>(Clock::now()-cameraEpoch).count();
         for (int i=0; i<64; ++i) {
@@ -1665,11 +1999,30 @@ private:
         box(window, exit + sf::Vector2f(3, 1), {11, 15}, exitColor);
         box(window, exit + sf::Vector2f(5, 4), {7, 12}, sf::Color(38, 29, 27));
         box(window, exit + sf::Vector2f(10, 10), {2, 2}, exitColor);
-        for (std::size_t i = 0; i < blossomCells.size(); ++i) {
-            const int cell = blossomCells[i];
-            if (std::find(game.crystals.begin(), game.crystals.end(), cell) == game.crystals.end()) continue;
-            const float pulse = std::sin(std::chrono::duration<float>(Clock::now() - revealUntil).count() * 3.f + i);
-            blossom(window, tilePosition(cell) + sf::Vector2f(9.75f, 8.2f), 6.5f + pulse * .55f, BLOSSOM_COLORS[i]);
+        const std::size_t flowerType = activeLevel.value_or(game.world.seed % LEVELS.size());
+        const auto paintFlower = [&](int cell) {
+            const auto center = tilePosition(cell) + sf::Vector2f(TILE * .5f, TILE * .47f);
+            const float size = 23.f + .8f * std::sin(seconds * 3.f + cell * .17f);
+            disc(window, center, 6.f, {251, 225, 158, 60});
+            if (!flowers.draw(window, center - sf::Vector2f(size, size) / 2.f, size, false, flowerType))
+                blossom(window, center, 7.f, season.accent);
+        };
+        for (int cell : session->flowerCells) if (cell >= 0) paintFlower(cell);
+        for (int cell : session->fakeFlowers()) paintFlower(cell);
+        for (int cell : session->statueCells()) {
+            const auto p = tilePosition(cell);
+            box(window, p + sf::Vector2f(3, 15), {13, 4}, {90, 91, 104}, {39, 44, 58});
+            polygon(window, {p + sf::Vector2f(5, 14), p + sf::Vector2f(7, 5),
+                             p + sf::Vector2f(12, 5), p + sf::Vector2f(15, 14)}, {118, 114, 133});
+            disc(window, p + sf::Vector2f(9.5f, 4), 3.1f, {158, 153, 172});
+        }
+        for (int cell : session->coffinCells()) {
+            const auto p = tilePosition(cell);
+            polygon(window, {p + sf::Vector2f(5, 1), p + sf::Vector2f(14, 1), p + sf::Vector2f(17, 6),
+                             p + sf::Vector2f(14, 18), p + sf::Vector2f(5, 18), p + sf::Vector2f(2, 6)}, {126, 94, 79});
+            box(window, p + sf::Vector2f(5, 4), {9, 12}, session->coffinsOpened() ? sf::Color(19, 16, 30) : sf::Color(63, 42, 58));
+            if (!session->coffinsOpened())
+                box(window, p + sf::Vector2f(8, 8), {3, 2}, {213, 169, 103});
         }
         for (const int potion : game.potions) {
             const auto pos = tilePosition(potion);
@@ -1687,18 +2040,57 @@ private:
         if (showPath && session->target >= 0) {
             const auto result = session->route();
             for (int i = 1; i < static_cast<int>(result.path.size()); ++i) {
+                if (session->fogAt(result.path[i])) continue;
                 const auto p = relic::point(result.path[i]);
                 box(window, {MAP_X + p.x * TILE + 7, MAP_Y + p.y * TILE + 7}, {6, 6}, sf::Color(66, 196, 221));
             }
             const auto p = relic::point(session->target);
-            box(window, {MAP_X + p.x * TILE + 2, MAP_Y + p.y * TILE + 2}, {TILE - 5, TILE - 5}, sf::Color::Transparent, sf::Color(89, 219, 238));
+            if (!session->fogAt(session->target))
+                box(window, {MAP_X + p.x * TILE + 2, MAP_Y + p.y * TILE + 2}, {TILE - 5, TILE - 5}, sf::Color::Transparent, sf::Color(89, 219, 238));
         }
         const auto frame = static_cast<unsigned>(std::chrono::duration_cast<std::chrono::milliseconds>(
             Clock::now() - cameraEpoch).count() / 125);
-        for (const auto& enemy : game.enemies) if (enemy.health > 0) {
+        std::vector<const relic::Enemy*> visibleEnemies;
+        for (const auto& enemy : game.enemies) if (enemy.active()) visibleEnemies.push_back(&enemy);
+        std::sort(visibleEnemies.begin(), visibleEnemies.end(), [](const auto* a, const auto* b) { return a->at < b->at; });
+        for (const auto* item : visibleEnemies) {
+            const auto& enemy = *item;
+            using Kind = relic::EnemyKind;
             const auto pos = tilePosition(enemy.at);
-            if (!guardians[enemy.tier].draw(window, pos - sf::Vector2f(2, 4), TILE + 4, false, frame + enemy.tier))
-                drawGuard(window, pos);
+            if (enemy.kind == Kind::Guard) {
+                if (!guardians[enemy.tier].draw(window, pos - sf::Vector2f(2, 4), TILE + 4, false, frame + enemy.tier))
+                    drawGuard(window, pos);
+            } else if (enemy.kind == Kind::Boss) {
+                const auto feet = pos + sf::Vector2f(TILE / 2, 17);
+                const float breathing = 1.f + .07f * std::sin(seconds * 3.f);
+                softLight(window, feet, {22, 10}, {174, 64, 123, 135});
+                polygon(window, {feet + sf::Vector2f(-18, 1), feet + sf::Vector2f(-9, -21),
+                                 feet + sf::Vector2f(9, -21), feet + sf::Vector2f(18, 1),
+                                 feet + sf::Vector2f(0, -3)}, {44, 24, 51});
+                disc(window, feet + sf::Vector2f(0, -23), 8.f * breathing, {37, 21, 45});
+                disc(window, feet + sf::Vector2f(-3, -23), 1.2f, {252, 131, 154});
+                disc(window, feet + sf::Vector2f(3, -23), 1.2f, {252, 131, 154});
+            } else if (enemy.kind == Kind::Mummy) {
+                const auto p = pos + sf::Vector2f(0, .7f * std::sin(seconds * 5.f + enemy.home));
+                box(window, p + sf::Vector2f(4, 5), {11, 12}, {47, 39, 47});
+                disc(window, p + sf::Vector2f(9, 4), 5.f, {196, 176, 137});
+                for (int band = 0; band < 4; ++band)
+                    box(window, p + sf::Vector2f(4.f + band % 2, 8.f + band * 2.f), {10, 1.5f}, {207, 187, 148});
+                box(window, p + sf::Vector2f(7, 3), {5, 2}, {86, 58, 47});
+            } else if (enemy.kind == Kind::Ghost) {
+                const auto p = pos + sf::Vector2f(9.5f, 5.f + 1.8f * std::sin(seconds * 3.f + enemy.home));
+                softLight(window, p, {13, 15}, {143, 200, 239, 131});
+                polygon(window, {p + sf::Vector2f(-6, 0), p + sf::Vector2f(6, 0), p + sf::Vector2f(7, 10),
+                                 p + sf::Vector2f(2, 7), p + sf::Vector2f(-2, 12), p + sf::Vector2f(-7, 9)}, {167, 216, 239, 182});
+                disc(window, p, 6.2f, {194, 226, 242, 225});
+                disc(window, p + sf::Vector2f(-2.5f, 0), 1.1f, {45, 61, 88});
+                disc(window, p + sf::Vector2f(2.5f, 0), 1.1f, {45, 61, 88});
+            } else if (enemy.kind == Kind::Puppet) {
+                softLight(window, pos + sf::Vector2f(9, 15), {14, 8}, {194, 87, 213, 150});
+                if (enemy.appearance >= 0 && static_cast<std::size_t>(enemy.appearance) < heroes.size())
+                    heroes[enemy.appearance].draw(window, pos + sf::Vector2f(-5, -10), 29.f,
+                        relic::point(game.player).x < relic::point(enemy.at).x, 0);
+            }
             if (enemy.warningCell >= 0) {
                 const auto warning = tilePosition(enemy.warningCell);
                 sf::CircleShape ring(9.f);
@@ -1708,9 +2100,22 @@ private:
                 ring.setOutlineThickness(1.5f);
                 window.draw(ring);
             }
-            for (int hp = 0; hp < enemy.health; ++hp)
-                box(window, pos + sf::Vector2f(2.f + hp * 3.f, -4), {2, 2}, sf::Color(255, 147, 100));
+            if (enemy.kind == Kind::Guard) {
+                constexpr int pip = relic::Game::expeditionAttackDamage;
+                for (int hp = 0; hp * pip < enemy.health; ++hp)
+                    box(window, pos + sf::Vector2f(2.f + hp * 3.f, -4),
+                        {2.f * std::min(pip, enemy.health - hp * pip) / pip, 2}, {255, 147, 100});
+            } else {
+                const int maximum = enemy.kind == Kind::Boss ? relic::GameSession::bossHealth(game.expeditionLevel) :
+                    enemy.kind == Kind::Puppet ? 100 : enemy.kind == Kind::Ghost ? 60 : 40;
+                const float width = enemy.kind == Kind::Boss ? 37.f : 21.f;
+                const float offset = enemy.kind == Kind::Boss ? 26.f : enemy.kind == Kind::Puppet ? 13.f : 6.f;
+                const auto corner = pos + sf::Vector2f((TILE - width) / 2.f, -offset);
+                box(window, corner, {width, 3}, {48, 34, 55});
+                box(window, corner, {width * enemy.health / maximum, 3}, {238, 107, 155});
+            }
         }
+        drawWeather();
         const auto now = Clock::now();
         const float progress = stepProgress(now);
         const bool walking = progress < 1.f;
@@ -1723,7 +2128,19 @@ private:
         const bool drawn = character.draw(window,spriteOrigin-sf::Vector2f(0,bounce),PLAYER_SIZE,facing.x<0);
         if (!drawn) drawExplorer(window, playerPos, facing, walking ? progress : 0.f, hero, jumpPose);
         drawStrike(playerPos, now);
+        if (session->stunLeft() > relic::GameSession::Time::zero()) {
+            const float spin = std::chrono::duration<float>(playTime()).count() * 5.f;
+            for (int i = 0; i < 3; ++i) {
+                const float angle = spin + i * 2.0944f;
+                disc(window, playerPos + sf::Vector2f(9.75f + 11.f * std::cos(angle), -10.f + 3.f * std::sin(angle)),
+                     2.f, {249, 224, 149});
+            }
+        }
         window.setView(view);
+        if (gameTime() < ultimateUntil) {
+            cutPanel(window, {{402, 154}, {365, 63}}, 12, {24, 22, 37, 241}, {211, 172, 102});
+            centeredLabel(window, displayFont(), ultimateTitle, {584, 185}, 31, {255, 224, 157});
+        }
         if (showPath && session->target >= 0) {
             const auto& result = session->route();
             text(window, font, ALGORITHMS[session->algorithm] + u8"    步数 " + std::to_string(result.path.empty() ? 0 : result.path.size()-1) +
@@ -1735,28 +2152,57 @@ private:
         box(window, {SIDEBAR_CONTENT_X, 208}, {224, 12}, sf::Color(60, 70, 78));
         box(window, {SIDEBAR_CONTENT_X, 208}, {224.f * std::max(0, game.health) / 100.f, 12}, sf::Color(79, 190, 133));
         text(window, font, u8"花朵   " + std::to_string(game.collected) + " / 4", SIDEBAR_CONTENT_X, 244, 18);
-        for (std::size_t i = 0; i < blossomCells.size(); ++i) {
-            const bool collected = std::find(game.crystals.begin(), game.crystals.end(), blossomCells[i]) == game.crystals.end();
-            blossom(window, {SIDEBAR_CONTENT_X + 129.f + i * 27.f, 255}, 7.f,
-                    collected ? BLOSSOM_COLORS[i] : sf::Color(66, 78, 87), collected);
+        for (std::size_t i = 0; i < session->flowerCells.size(); ++i) {
+            const bool collected = session->flowerCells[i] == -1;
+            const auto tint = collected ? sf::Color::White : sf::Color(255, 255, 255, 116);
+            (collected ? flowers : dormantFlowers).draw(window,
+                {SIDEBAR_CONTENT_X + 118.f + i * 27.f, 244}, 22.f, false, flowerType, tint);
         }
         text(window, font, u8"步数   " + std::to_string(game.steps) + " / " + std::to_string(session->limits.steps), SIDEBAR_CONTENT_X, 282, 18);
         text(window, font, u8"地形消耗   " + std::to_string(game.spent) + " / " + std::to_string(session->limits.cost), SIDEBAR_CONTENT_X, 320, 18);
-        text(window, font, u8"寻路算法", SIDEBAR_CONTENT_X, 378, 16, sf::Color(159, 199, 190));
+        text(window, font, u8"寻路算法", SIDEBAR_CONTENT_X, 343, 16, sf::Color(159, 199, 190));
         for (int i = 0; i < 3; ++i) {
             const auto color = i == session->algorithm ? sf::Color(38, 117, 113) : sf::Color(42, 52, 61);
-            box(window, {SIDEBAR_CONTENT_X + i * ALGORITHM_BUTTON_STEP, 414}, {73, 38}, color);
-            text(window, font, std::to_string(i + 1) + "  " + ALGORITHMS[i], SIDEBAR_CONTENT_X + 6.f + i * ALGORITHM_BUTTON_STEP, 423, 14);
+            box(window, {SIDEBAR_CONTENT_X + i * ALGORITHM_BUTTON_STEP, 365}, {73, 33}, color);
+            text(window, font, std::to_string(i + 1) + "  " + ALGORITHMS[i], SIDEBAR_CONTENT_X + 6.f + i * ALGORITHM_BUTTON_STEP, 371, 14);
         }
-        text(window, font, u8"点击地面，规划路线", SIDEBAR_CONTENT_X, 486, 14, sf::Color(174, 188, 198));
-        text(window, font, u8"空格 / F  攻击相邻守卫", SIDEBAR_CONTENT_X, 520, 14, sf::Color(174, 188, 198));
-        text(window, font, u8"E 自动行走    H 切换路线显示", SIDEBAR_CONTENT_X, 552, 14, sf::Color(174, 188, 198));
-        text(window, font, u8"Tab 切换全图与跟随视角", SIDEBAR_CONTENT_X, 580, 14, sf::Color(174, 188, 198));
-        text(window, font, u8"方向键可长按    Shift + 方向 跳跃", SIDEBAR_CONTENT_X, 608, 14, sf::Color(174, 188, 198));
-        if (game.status == "playing") text(window, font, notice, SIDEBAR_CONTENT_X, 648, 14, sf::Color(235, 196, 128));
+        const auto& type = displayFont();
+        const sf::Color muted(174, 188, 198), gold(235, 196, 128);
+        if (const auto* boss = session->boss(); boss && boss->active())
+            text(window, type, u8"首领 " + std::to_string(boss->health) + " / " +
+                 std::to_string(relic::GameSession::bossHealth(game.expeditionLevel)),
+                 SIDEBAR_CONTENT_X + 108, 131, 15, {245, 167, 191});
+        const int nextWeapon = session->weapon();
+        const bool automatic = session->weaponRotationEnabled();
+        text(window, type, automatic ? u8"武器 · 自动轮换" : u8"武器 · 手动锁定", SIDEBAR_CONTENT_X, 422, 19, gold);
+        if (!automatic) {
+            const auto bounds = weaponRotationButton();
+            const bool hover = bounds.contains(window.mapPixelToCoords(sf::Mouse::getPosition(window)));
+            box(window, bounds.position, bounds.size, hover ? sf::Color(73, 59, 43) : sf::Color(36, 44, 54), gold);
+            centeredLabel(window, type, u8"恢复轮换", bounds.getCenter(), 15, gold);
+        }
+        if (nextWeapon < 0)
+            text(window, type, u8"通关后解锁武器", SIDEBAR_CONTENT_X, 460, 17, muted);
+        for (std::size_t i = 0; i < relic::weapons.size(); ++i) {
+            if (!session->hasWeapon(i)) continue;
+            const auto bounds = weaponRow(i);
+            const bool selected = nextWeapon == static_cast<int>(i);
+            box(window, bounds.position, bounds.size, selected ? sf::Color(73, 59, 43) : sf::Color(36, 44, 54),
+                selected ? gold : sf::Color(64, 73, 82));
+            text(window, type, relic::weapons[i].name, bounds.position.x + 9, bounds.position.y + 3, 17, selected ? gold : muted);
+            const auto left = std::chrono::ceil<std::chrono::seconds>(session->cooldown(i)).count();
+            centeredLabel(window, type, left ? std::to_string(left) + " s" : u8"就绪",
+                          {bounds.position.x + 196, bounds.position.y + 14}, 16, left ? muted : gold);
+        }
+        text(window, type, u8"空格 普攻   单按 Shift 大招", SIDEBAR_CONTENT_X, 694, 15, muted);
+        text(window, type, u8"Shift + 方向 跳跃   E 自动走", SIDEBAR_CONTENT_X, 718, 15, muted);
+        text(window, type, u8"Tab 视角   H 路线   点地面设目标", SIDEBAR_CONTENT_X, 742, 15, muted);
+        if (game.status == "playing") text(window, type, notice, 28, 855, 18, gold);
+        const auto stun = std::chrono::ceil<std::chrono::seconds>(session->stunLeft()).count();
+        if (stun > 0)
+            text(window, type, u8"眩晕   " + std::to_string(stun) + " s", SIDEBAR_CONTENT_X, 772, 18, gold);
         if (std::any_of(game.enemies.begin(), game.enemies.end(), [](const relic::Enemy& enemy) { return enemy.health > 0 && enemy.warningCell >= 0; }))
-            text(window, font, u8"守卫即将攻击，离开标记格！", SIDEBAR_CONTENT_X, 681, 16, sf::Color(255, 150, 123));
-        text(window, font, u8"N 新地图     Esc 停止自动行走", SIDEBAR_CONTENT_X, 742, 13, sf::Color(143, 157, 168));
+            text(window, type, u8"守卫即将攻击", SIDEBAR_CONTENT_X + 108, 773, 16, sf::Color(255, 150, 123));
     }
 };
 }

@@ -51,7 +51,8 @@ struct AudioEngine {
 struct Music::Playback {
     AudioEngine audio;
     Clip menu, expedition;
-    std::array<Clip, 5> effects;
+    std::array<Clip, static_cast<std::size_t>(Cue::Count)> effects;
+    std::array<Clip, 7> ultimates;
     bool inExpedition = false;
     unsigned steps = 0;
 
@@ -66,9 +67,25 @@ Music::Music(const std::filesystem::path& originalTheme, const std::filesystem::
     player->menu.load(engine, menuTheme, .30f, true, MA_SOUND_FLAG_STREAM);
     if (!player->menu.ready) player->menu.load(engine, originalTheme, .42f, true);
     player->expedition.load(engine, root / "expedition-theme.wav", .42f, true);
-    constexpr std::array names{"step-stone.wav", "step-sand.wav", "blade-miss.wav", "blade-hit.wav", "guard-hit.wav"};
-    for (std::size_t i = 0; i < names.size(); ++i)
-        player->effects[i].load(engine, root / names[i], i < 2 ? .30f : .44f);
+    const auto sfx = root / "sfx";
+    const auto loadEffect = [&](Cue cue, const std::filesystem::path& path, float volume,
+                                const char* fallback = nullptr) {
+        auto& clip = player->effects[static_cast<std::size_t>(cue)];
+        clip.load(engine, path, volume);
+        if (!clip.ready && fallback) clip.load(engine, root / fallback, volume);
+    };
+    loadEffect(Cue::Stone, root / "step-stone.wav", .30f);
+    loadEffect(Cue::Sand, root / "step-sand.wav", .30f);
+    loadEffect(Cue::Miss, sfx / "blade-miss.wav", .34f, "blade-miss.wav");
+    loadEffect(Cue::Hit, sfx / "blade-hit.wav", .48f, "blade-hit.wav");
+    loadEffect(Cue::Hurt, root / "guard-hit.wav", .44f);
+    loadEffect(Cue::Click, sfx / "ui-chime.wav", .25f);
+    loadEffect(Cue::Tap, sfx / "click.wav", .12f);
+    // Same order as relic::weapons.
+    constexpr std::array ultimateFiles{"wind-whip.wav", "phantom-zone.wav", "moon-slash.wav",
+                                       "starburst.wav", "silver-spear.wav", "judgment.wav", "void-edge.wav"};
+    for (std::size_t i = 0; i < ultimateFiles.size(); ++i)
+        player->ultimates[i].load(engine, sfx / ultimateFiles[i], .54f);
     player->theme().play();
     playback = std::move(player);
 }
@@ -91,6 +108,13 @@ void Music::setExpedition(bool active) {
 void Music::play(Cue cue) {
     if (!playback || silent) return;
     const bool step = cue == Cue::Stone || cue == Cue::Sand;
-    const float pitch = step ? (.93f + (.035f * (playback->steps++ % 5))) : 1.f;
+    const float pitch = step ? (.93f + (.035f * (playback->steps++ % 5))) : cue == Cue::Tap ? 1.18f : 1.f;
     playback->effects[static_cast<std::size_t>(cue)].play(true, pitch);
+}
+
+void Music::playUltimate(std::size_t weapon) {
+    if (!playback || silent || weapon >= playback->ultimates.size()) return;
+    auto& clip = playback->ultimates[weapon];
+    if (clip.ready) clip.play(true);
+    else play(Cue::Hit);
 }

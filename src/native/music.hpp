@@ -9,7 +9,7 @@ class Music {
     bool silent = false;
 
 public:
-    enum class Cue { Stone, Sand, Miss, Hit, Hurt };
+    enum class Cue { Stone, Sand, Miss, Hit, Hurt, Click, Tap, Count };
     Music(const std::filesystem::path& originalTheme, const std::filesystem::path& menuTheme);
     ~Music();
     bool available() const { return static_cast<bool>(playback); }
@@ -17,4 +17,5 @@ public:
     void toggle();
     void setExpedition(bool active);
     void play(Cue cue);
+    void playUltimate(std::size_t weapon);
 };

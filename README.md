@@ -24,7 +24,7 @@
 python3 run.py
 ```
 
-macOS 也可双击 `platforms/macOS/启动游戏.command`；Windows 双击 `platforms/Windows/启动游戏.bat`。从源码启动首次运行会编译。Windows 免安装发行包（`BYOW.exe`、应用文件和 runtime）以及 macOS `.app` 都是平台专属构建产物，不纳入 Git；推送仓库时包含共用源码、平台启动脚本和打包说明，用户可在对应平台重新构建应用包。
+macOS 也可双击 `platforms/macOS/启动游戏.command`。Windows 的 `platforms/Windows/启动游戏.bat` 优先打开已安装的原生版，没有原生版时会回退到 Java 兼容版；可用 `启动游戏.bat --java` 主动选择兼容版。从源码启动首次运行会编译。Windows 免安装发行包（`BYOW.exe`、应用文件和 runtime）以及 macOS `.app` 都是平台专属构建产物，不纳入 Git；推送仓库时包含共用源码、平台启动脚本和打包说明，用户可在对应平台重新构建应用包。
 
 ## Java 兼容版玩法
 
